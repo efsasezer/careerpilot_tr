@@ -9,11 +9,25 @@ def test_render_uses_default_database_without_a_persistent_disk():
     config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
 
     assert "plan: free" in config
+    assert config.count("    name: careerpilot-tr-api") == 1
     assert "startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT" in config
     assert "healthCheckPath: /health" in config
     assert "CAREERPILOT_DEMO_MODE" in config
     assert "DATABASE_URL" not in config
     assert "\n    disk:" not in config
+
+
+def test_render_defines_separate_free_frontend_for_existing_api():
+    config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
+
+    assert config.count("  - type: web") == 2
+    assert config.count("    name: careerpilot-tr-api") == 1
+    assert config.count("    name: careerpilot-tr-frontend") == 1
+    assert config.count("    plan: free") == 2
+    assert "startCommand: streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true" in config
+    assert "healthCheckPath: /_stcore/health" in config
+    assert "      - key: API_URL\n        value: https://careerpilot-tr-api.onrender.com" in config
+    assert "      - key: CAREERPILOT_DEMO_MODE\n        value: \"true\"" in config
 
 
 def test_migration_uses_configured_render_sqlite_path(monkeypatch):

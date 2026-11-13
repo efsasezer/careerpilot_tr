@@ -13,3 +13,19 @@ services:
         value: 3.12.8
       - key: CAREERPILOT_DEMO_MODE
         value: "true"
+  - type: web
+    name: careerpilot-tr-frontend
+    runtime: python
+    plan: free
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+    healthCheckPath: /_stcore/health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: API_URL
+        value: https://careerpilot-tr-api.onrender.com
+      - key: CAREERPILOT_DEMO_MODE
+        value: "true"

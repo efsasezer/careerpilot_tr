@@ -76,20 +76,11 @@ streamlit run frontend/app.py --server.address 0.0.0.0
 
 Bir barındırma servisine dağıtırken `CAREERPILOT_DEMO_MODE=true` değişkenini mutlaka ayarla. Demo modu yazma işlemlerini engeller ancak GET yanıtlarındaki kişisel verileri gizlemez.
 
-## Render API yayını
+## Render Blueprint yayını
 
-Proje kökündeki `render.yaml`, ücretsiz `backend.main:app` FastAPI servisini, `/health` sağlık kontrolünü ve `PORT` kullanan başlangıç komutunu tanımlar. Kalıcı disk kullanılmaz; SQLite dosyası uygulama koduyla birlikte dağıtım paketinde bulunur. Ücretsiz serviste yerel dosya sistemi kalıcı değildir; veritabanında çalışma sırasında yapılan değişiklikler yeniden başlatma veya yeni dağıtımda kaybolabilir. `autoDeploy: false` nedeniyle GitHub'a push tek başına otomatik dağıtım başlatmaz.
+Proje kökündeki `render.yaml`, aynı GitHub deposundan iki ücretsiz Web Service tanımlar: mevcut `careerpilot-tr-api` FastAPI servisi ve ona bağlanan `careerpilot-tr-frontend` Streamlit servisi. Frontend servisindeki `API_URL`, `https://careerpilot-tr-api.onrender.com` değerine ayarlanmıştır; yerel geliştirmede kodun varsayılanı `http://127.0.0.1:8000` olarak kalır. Her iki servis de salt-okunur demo modunda çalışır. `autoDeploy: false` nedeniyle GitHub'a push tek başına dağıtım başlatmaz; Render Blueprint değişikliklerini inceleyip uygulamak gerekir.
 
-1. Değişiklikleri GitHub'a göndermeden önce deponun Private olduğunu doğrula; kişisel veritabanını yalnızca bu doğrulamadan sonra ekle.
-2. Render'da **New → Blueprint** ile aynı depoyu seç ve `render.yaml` yapılandırmasını inceleyerek onayla.
-3. Servisin deploy loglarında `/health` kontrolünün başarılı olduğunu doğrula.
-4. Render servisinin `https://<servis-adı>.onrender.com` adresini Streamlit Community Cloud ayarlarında **Secrets** bölümüne ekle:
-
-   ```toml
-   API_URL = "https://<servis-adı>.onrender.com"
-   ```
-
-   Ön yüz `API_URL` ortam değişkenini, yoksa `API_URL` Streamlit secret'ını okur; yerel varsayılan `http://127.0.0.1:8000` olarak kalır. Arayüz backend `/health` yanıtından demo modunu algılar.
+Render ücretsiz servislerinin yerel dosya sistemi kalıcı değildir; SQLite dosyasında çalışma sırasında yapılan değişiklikler yeniden başlatma veya yeni dağıtımda kaybolabilir. Frontend sağlık kontrolü `/_stcore/health`, API sağlık kontrolü `/health` yolunu kullanır.
 
 Uygulama varsayılan olarak proje kökündeki `careerpilot.db` dosyasını kullanır. Dosya bulunamazsa uygulama boş veritabanı oluşturarak mevcut kayıtları gizlemek yerine açık hata verir. Bu veritabanı aday profili ve kişisel notlar içerdiğinden, depoya eklemeden önce GitHub deposunun Private olduğunu doğrula. Depo Private değilse veritabanını Git'e ekleme veya push etme.
 
