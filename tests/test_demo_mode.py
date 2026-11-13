@@ -31,7 +31,7 @@ def build_request(method, path):
     })
 
 
-def test_read_only_demo_blocks_profile_matching_and_write_routes(monkeypatch):
+def test_read_only_demo_allows_get_requests_and_blocks_write_routes(monkeypatch):
     monkeypatch.setattr(main, "DEMO_MODE", True)
 
     async def call_next(_request):
@@ -39,11 +39,14 @@ def test_read_only_demo_blocks_profile_matching_and_write_routes(monkeypatch):
 
     for path in ("/profile", "/public/matches", "/jobs", "/sources/sync-all"):
         response = asyncio.run(main.restrict_demo_api(build_request("GET", path), call_next))
+        assert response.status_code == 204
+
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        response = asyncio.run(main.restrict_demo_api(build_request(method, "/jobs"), call_next))
         assert response.status_code == 404
 
-    for path in ("/sources/sync-all", "/jobs"):
-        response = asyncio.run(main.restrict_demo_api(build_request("POST", path), call_next))
-        assert response.status_code == 404
+    response = asyncio.run(main.restrict_demo_api(build_request("POST", "/sources/sync-all"), call_next))
+    assert response.status_code == 404
 
     response = asyncio.run(main.restrict_demo_api(build_request("GET", "/public/summary"), call_next))
     assert response.status_code == 204

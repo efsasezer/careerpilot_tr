@@ -1,7 +1,15 @@
 .venv/
+venv/
 __pycache__/
 .pytest_cache/
 *.py[cod]
-careerpilot.db
+.env.*
+!.env.example
 .env
+*.pem
+*.key
+*.token
+secrets/
+*.tmp
+*.log
 .DS_Store

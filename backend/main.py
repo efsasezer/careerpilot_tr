@@ -50,12 +50,8 @@ DEMO_MODE = os.getenv("CAREERPILOT_DEMO_MODE", "").strip().casefold() in {"1", "
 
 @app.middleware("http")
 async def restrict_demo_api(request, call_next):
-    if DEMO_MODE:
-        path = request.url.path.rstrip("/") or "/"
-        public_get_paths = {"/health", "/sources", "/sources/status", "/public/listings", "/public/summary"}
-        is_public_source_list = re.fullmatch(r"/sources/[^/]+/listings", path) is not None
-        if request.method != "GET" or (path not in public_get_paths and not is_public_source_list):
-            return JSONResponse(status_code=404, content={"detail": "Bu uç nokta herkese açık demo modunda kullanılamaz."})
+    if DEMO_MODE and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        return JSONResponse(status_code=404, content={"detail": "Salt okunur demo modunda veri değiştiren işlemler kullanılamaz."})
     return await call_next(request)
 
 SOURCES_STATUS = {

@@ -55,7 +55,9 @@ Arayüz normalde `http://localhost:8501` adresinde açılır.
 
 ## Herkese açık salt okunur demo
 
-Uygulamayı internete açmadan önce her iki süreçte de demo modunu etkinleştir. Bu modda aday profili, ilan ekleme/silme, uygunluk eşleştirmesi ve kaynak senkronizasyonu API üzerinden kapatılır; ziyaretçiler yalnızca kamu ilanlarını ve kaynak bilgilerini okuyabilir.
+Uygulamayı internete açmadan önce her iki süreçte de demo modunu etkinleştir. Bu modda tüm GET uçları (aday profili ve eşleştirmeler dâhil) okunabilir; POST, PUT, PATCH ve DELETE istekleri engellenir.
+
+**Gizlilik uyarısı:** `/profile` kişisel aday bilgilerini, puanları, tercihleri ve notları döndürür; `/public/matches` bu profil ile hesaplanan sonuçları da gösterebilir. Bu uçlar erişim denetimi olmadan internete açılırsa herkes bu bilgileri okuyabilir. Kişisel veriler içeren `careerpilot.db` dosyasını GitHub'a veya herkese açık bir servise göndermeden önce deponun Private olduğunu doğrula ve bu verilerin paylaşılmasını ayrıca değerlendir.
 
 Backend terminalinde:
 
@@ -72,13 +74,13 @@ $env:CAREERPILOT_API_URL = "http://127.0.0.1:8000"
 streamlit run frontend/app.py --server.address 0.0.0.0
 ```
 
-Bir barındırma servisine dağıtırken `CAREERPILOT_DEMO_MODE=true` değişkenini mutlaka ayarla, veritabanı için kalıcı disk kullan ve yalnızca web arayüzü portunu internete aç. SQLite dosyası kalıcı diskte değilse yeniden başlatmada kaybolabilir. Bu proje klasöründeki veritabanı ve kişisel profil verilerini herkese açık depoya yükleme.
+Bir barındırma servisine dağıtırken `CAREERPILOT_DEMO_MODE=true` değişkenini mutlaka ayarla. Demo modu yazma işlemlerini engeller ancak GET yanıtlarındaki kişisel verileri gizlemez.
 
 ## Render API yayını
 
-Proje kökündeki `render.yaml`, `backend.main:app` FastAPI servisini, `/health` sağlık kontrolünü, Python build adımını, `PORT` kullanan başlangıç komutunu ve `/var/data` kalıcı diskini tanımlar. Blueprint servisi `starter` planını kullanır; bu plan ve kalıcı disk Render'da ücretlidir. `autoDeploy: false` nedeniyle GitHub'a push tek başına otomatik dağıtım başlatmaz.
+Proje kökündeki `render.yaml`, ücretsiz `backend.main:app` FastAPI servisini, `/health` sağlık kontrolünü ve `PORT` kullanan başlangıç komutunu tanımlar. Kalıcı disk kullanılmaz; SQLite dosyası uygulama koduyla birlikte dağıtım paketinde bulunur. Ücretsiz serviste yerel dosya sistemi kalıcı değildir; veritabanında çalışma sırasında yapılan değişiklikler yeniden başlatma veya yeni dağıtımda kaybolabilir. `autoDeploy: false` nedeniyle GitHub'a push tek başına otomatik dağıtım başlatmaz.
 
-1. Değişiklikleri GitHub deposuna gönder.
+1. Değişiklikleri GitHub'a göndermeden önce deponun Private olduğunu doğrula; kişisel veritabanını yalnızca bu doğrulamadan sonra ekle.
 2. Render'da **New → Blueprint** ile aynı depoyu seç ve `render.yaml` yapılandırmasını inceleyerek onayla.
 3. Servisin deploy loglarında `/health` kontrolünün başarılı olduğunu doğrula.
 4. Render servisinin `https://<servis-adı>.onrender.com` adresini Streamlit Community Cloud ayarlarında **Secrets** bölümüne ekle:
@@ -89,7 +91,7 @@ Proje kökündeki `render.yaml`, `backend.main:app` FastAPI servisini, `/health`
 
    Ön yüz `API_URL` ortam değişkenini, yoksa `API_URL` Streamlit secret'ını okur; yerel varsayılan `http://127.0.0.1:8000` olarak kalır. Arayüz backend `/health` yanıtından demo modunu algılar.
 
-`careerpilot.db` `.gitignore` tarafından Git dışında tutulur. Yerel dosya mevcut kurulumda 108 ilan ve bir aday profili içeriyor; dosya repoya eklenmemeli. Bu nedenle Render üzerindeki yeni kalıcı disk başlangıçta boş bir veritabanı oluşturur ve yerel kayıtlar otomatik kopyalanmaz. Mevcut ilanları yayına taşımak istersen aday profilini, özel sektör kayıtlarını ve kişisel notları dışarıda bırakan, yalnızca paylaşımı uygun kamu ilanlarından oluşan güvenli bir içe aktarma işlemi ayrıca yapılmalıdır. Yerel veritabanı dosyası değiştirilmez veya silinmez.
+Uygulama varsayılan olarak proje kökündeki `careerpilot.db` dosyasını kullanır. Dosya bulunamazsa uygulama boş veritabanı oluşturarak mevcut kayıtları gizlemek yerine açık hata verir. Bu veritabanı aday profili ve kişisel notlar içerdiğinden, depoya eklemeden önce GitHub deposunun Private olduğunu doğrula. Depo Private değilse veritabanını Git'e ekleme veya push etme.
 
 ## 4. İlk deneme sırası
 

@@ -2,6 +2,18 @@ from pathlib import Path
 import sqlite3
 
 from backend import migrate
+from backend.database import ensure_sqlite_database_file_exists
+
+
+def test_render_uses_default_database_without_a_persistent_disk():
+    config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
+
+    assert "plan: free" in config
+    assert "startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT" in config
+    assert "healthCheckPath: /health" in config
+    assert "CAREERPILOT_DEMO_MODE" in config
+    assert "DATABASE_URL" not in config
+    assert "\n    disk:" not in config
 
 
 def test_migration_uses_configured_render_sqlite_path(monkeypatch):
@@ -16,6 +28,37 @@ def test_migration_skips_memory_and_non_sqlite_databases(monkeypatch):
 
     monkeypatch.setattr(migrate, "DATABASE_URL", "postgresql://example/db")
     assert migrate.migration_database_path() is None
+
+
+def test_missing_sqlite_database_is_not_silently_created(tmp_path):
+    missing_database = tmp_path / "missing.db"
+
+    try:
+        ensure_sqlite_database_file_exists(f"sqlite:///{missing_database.as_posix()}")
+    except FileNotFoundError as error:
+        assert str(missing_database) in str(error)
+    else:
+        raise AssertionError("Missing SQLite database should raise FileNotFoundError")
+
+    assert not missing_database.exists()
+
+
+def test_memory_sqlite_database_does_not_require_a_file():
+    ensure_sqlite_database_file_exists("sqlite:///:memory:")
+
+
+def test_missing_sqlite_uri_database_is_not_silently_created(tmp_path):
+    missing_database = tmp_path / "missing.db"
+    database_url = f"sqlite:///file:{missing_database.as_posix()}?uri=true"
+
+    try:
+        ensure_sqlite_database_file_exists(database_url)
+    except FileNotFoundError as error:
+        assert str(missing_database) in str(error)
+    else:
+        raise AssertionError("Missing SQLite URI database should raise FileNotFoundError")
+
+    assert not missing_database.exists()
 
 
 def test_migration_preserves_existing_database_rows(tmp_path, monkeypatch):
