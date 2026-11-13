@@ -1,9 +1,11 @@
 import os
+import secrets
 from datetime import date, datetime
 from datetime import timedelta
 import re
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -46,12 +48,52 @@ app = FastAPI(
     description="Kamu Personeli Alım & Uygunluk Analiz Motoru",
 )
 DEMO_MODE = os.getenv("CAREERPILOT_DEMO_MODE", "").strip().casefold() in {"1", "true", "yes", "on"}
+CORS_ORIGINS = {
+    "https://careerpilot-tr-web.onrender.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+}
+CORS_ORIGINS.update(
+    origin.strip()
+    for origin in os.getenv("CAREERPILOT_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=sorted(CORS_ORIGINS),
+    allow_credentials=False,
+    allow_methods=["GET", "HEAD", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 
 @app.middleware("http")
 async def restrict_demo_api(request, call_next):
-    if DEMO_MODE and request.method not in {"GET", "HEAD", "OPTIONS"}:
-        return JSONResponse(status_code=404, content={"detail": "Salt okunur demo modunda veri değiştiren işlemler kullanılamaz."})
+    if DEMO_MODE:
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            return JSONResponse(status_code=404, content={"detail": "Salt okunur yayında veri değiştiren işlemler kullanılamaz."})
+
+        path = request.url.path.rstrip("/") or "/"
+        if path != "/health":
+            access_token = os.getenv("CAREERPILOT_ACCESS_TOKEN", "")
+            if not access_token:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Özel erişim anahtarı sunucuda yapılandırılmamış."},
+                )
+            expected_authorization = f"Bearer {access_token}"
+            authorization = request.headers.get("authorization", "")
+            if not secrets.compare_digest(
+                authorization.encode("utf-8"),
+                expected_authorization.encode("utf-8"),
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                    content={"detail": "Bu veriler için geçerli erişim anahtarı gerekli."},
+                )
     return await call_next(request)
 
 SOURCES_STATUS = {
@@ -155,6 +197,11 @@ def health():
         "version": "0.4.0",
         "demo_mode": DEMO_MODE,
     }
+
+
+@app.get("/auth/check")
+def check_access():
+    return {"authenticated": True}
 
 
 # ============================================================

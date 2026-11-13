@@ -13,6 +13,8 @@ services:
         value: 3.12.8
       - key: CAREERPILOT_DEMO_MODE
         value: "true"
+      - key: CAREERPILOT_ACCESS_TOKEN
+        generateValue: true
   - type: web
     name: careerpilot-tr-frontend
     runtime: python
@@ -27,5 +29,24 @@ services:
         value: 3.12.8
       - key: API_URL
         value: https://careerpilot-tr-api.onrender.com
+      - key: CAREERPILOT_ACCESS_TOKEN
+        fromService:
+          name: careerpilot-tr-api
+          type: web
+          envVarKey: CAREERPILOT_ACCESS_TOKEN
       - key: CAREERPILOT_DEMO_MODE
         value: "true"
+  - type: web
+    name: careerpilot-tr-web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    autoDeploy: false
+    envVars:
+      - key: VITE_API_URL
+        value: https://careerpilot-tr-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

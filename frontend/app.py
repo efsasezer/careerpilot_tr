@@ -175,30 +175,32 @@ st.markdown("""
 # ============================================================
 
 def api_get(path, params=None):
-    response = requests.get(f"{API_URL}{path}", params=params, timeout=45)
+    response = requests.get(f"{API_URL}{path}", params=params, headers=api_headers(), timeout=45)
     response.raise_for_status()
     return response.json()
 
 
-@st.cache_data(ttl=45)
-def public_api_get(path, params=None):
-    return api_get(path, params)
+def api_headers():
+    access_token = os.getenv("CAREERPILOT_ACCESS_TOKEN")
+    if not access_token:
+        return {}
+    return {"Authorization": f"Bearer {access_token}"}
 
 
 def api_post(path, payload):
-    response = requests.post(f"{API_URL}{path}", json=payload, timeout=12)
+    response = requests.post(f"{API_URL}{path}", json=payload, headers=api_headers(), timeout=12)
     response.raise_for_status()
     return response.json()
 
 
 def api_post_action(path, timeout=180):
-    response = requests.post(f"{API_URL}{path}", timeout=timeout)
+    response = requests.post(f"{API_URL}{path}", headers=api_headers(), timeout=timeout)
     response.raise_for_status()
     return response.json()
 
 
 def api_put(path, payload):
-    response = requests.put(f"{API_URL}{path}", json=payload, timeout=12)
+    response = requests.put(f"{API_URL}{path}", json=payload, headers=api_headers(), timeout=12)
     response.raise_for_status()
     return response.json()
 
@@ -224,6 +226,19 @@ with st.sidebar:
         st.error("🔴 API Bağlantısı Yok (Port 8000)")
         st.stop()
 
+    if DEMO_MODE and not os.getenv("CAREERPILOT_ACCESS_TOKEN"):
+        st.error("Backend erişim anahtarı frontend servisinde yapılandırılmamış.")
+        st.stop()
+    if DEMO_MODE:
+        try:
+            api_get("/auth/check")
+        except requests.HTTPError as error:
+            if error.response is not None and error.response.status_code == 401:
+                st.error("Frontend servisinin backend erişim anahtarı geçersiz.")
+            else:
+                show_api_error(error)
+            st.stop()
+
     page = st.radio(
         "Görünüm Seçin",
         [
@@ -231,84 +246,32 @@ with st.sidebar:
             "🏛️ Kamu İlanları",
             "📅 Başvuru Takvimi",
             "🔗 Kaynaklar",
-        ] if DEMO_MODE else [
-            "📊 Genel Bakış",
-            "🏛️ Kamu İlanları",
-            "📅 Başvuru Takvimi",
-            "🔗 Kaynaklar",
             "🎓 Eğitim & Diğer Fırsatlar",
             "👤 Aday Profili",
+            "💼 Özel Sektör & Beceri Analizi",
             "⚙️ Ayarlar",
         ],
         index=0,
     )
     st.divider()
 
-    if DEMO_MODE:
-        st.info("Salt okunur demo")
-    else:
-        try:
-            p = api_get("/profile")
-            st.markdown("##### 📌 Aday Özeti")
-            st.markdown(f"**Bölüm:** {p.get('department') or 'Bilgisayar Mühendisliği'}")
-            st.markdown(f"**Üniversite:** {p.get('university') or 'İstanbul Topkapı Üniversitesi'}")
-            st.markdown(f"**KPSS P3:** `{p.get('kpss_p3', 87.60):.2f}`")
-            shift_status = "✅ Kabul Ediyor" if p.get("accepts_shifts") else ("❌ Kabul Etmiyor" if p.get("accepts_shifts") is False else "⚠️ Bilinmiyor")
-            st.markdown(f"**Vardiya:** {shift_status}")
-        except Exception:
-            pass
+    try:
+        p = api_get("/profile")
+        st.markdown("##### 📌 Aday Özeti")
+        st.markdown(f"**Bölüm:** {p.get('department') or 'Bilgisayar Mühendisliği'}")
+        st.markdown(f"**Üniversite:** {p.get('university') or 'İstanbul Topkapı Üniversitesi'}")
+        st.markdown(f"**KPSS P3:** `{p.get('kpss_p3', 87.60):.2f}`")
+        shift_status = "✅ Kabul Ediyor" if p.get("accepts_shifts") else ("❌ Kabul Etmiyor" if p.get("accepts_shifts") is False else "⚠️ Bilinmiyor")
+        st.markdown(f"**Vardiya:** {shift_status}")
+    except Exception as exc:
+        show_api_error(exc)
 
 
 # ============================================================
 # 1. KAMU İLANLARI (POZİSYON BAZLI İŞ FIRSATLARI)
 # ============================================================
 
-if DEMO_MODE and page == "📊 Genel Bakış":
-    st.markdown("""
-    <div class="main-header">
-        <h1>CareerPilot TR</h1>
-        <p>Resmî kamu ilanlarını tek yerde takip edin</p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.info("Salt okunur demo — aday profili, ilan yönetimi ve kaynak güncelleme işlemleri kapalıdır.")
-
-    try:
-        summary = public_api_get("/public/summary")
-        sources = public_api_get("/sources")
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Toplam ilan", summary["total"])
-        c2.metric("Başvuruya açık", summary["open"])
-        c3.metric("Yakında başlayacak", summary["upcoming"])
-        c4.metric("Son 7 günde eklenen", summary["new_last_7_days"])
-
-        st.caption(
-            "İlan verisinin son güncellenmesi: "
-            + (summary["last_updated"] or "Tarih bilgisi bulunmuyor")
-        )
-        st.subheader("Kaynakların durumu")
-        source_cols = st.columns(2)
-        for index, src in enumerate(sources):
-            with source_cols[index % 2]:
-                st.markdown(f"**{src['name']}**")
-                st.caption(src["description"])
-                st.write(f"Durum: {src['status']} · Kayıtlı ilan: {src['job_count']}")
-                st.markdown(f"[Resmî kaynağı aç]({src['url']})")
-
-        st.subheader("Son eklenen ilanlar")
-        for job in summary["latest"]:
-            with st.container(border=True):
-                st.markdown(f"**{job['organization']}** — {job['title']}")
-                st.caption(
-                    f"{job['source_name']} · {job['application_status']} · "
-                    f"Son başvuru: {job['application_deadline'] or 'Belirtilmemiş'}"
-                )
-                if job["source_url"]:
-                    st.markdown(f"[Resmî ilan detayına git]({job['source_url']})")
-    except Exception as exc:
-        show_api_error(exc)
-
-elif page == "📊 Genel Bakış":
+if page == "📊 Genel Bakış":
     st.markdown("""
     <div class="main-header">
         <h1>CareerPilot TR</h1>
@@ -349,46 +312,6 @@ elif page == "📊 Genel Bakış":
                 if job.get('source_url'):
                     st.markdown(f"[İlan detayına git]({job['source_url']})")
 
-    except Exception as exc:
-        show_api_error(exc)
-
-elif DEMO_MODE and page == "🏛️ Kamu İlanları":
-    st.markdown("""
-    <div class="main-header">
-        <h1>Kamu İlanları</h1>
-        <p>Resmî ilan kaynaklarından derlenen açık veriler</p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.caption("Salt okunur demo — uygunluk eşleştirmesi ve profil bilgileri paylaşılmaz.")
-
-    try:
-        sources = public_api_get("/sources")
-        source_names = ["Tüm kaynaklar"] + [item["name"] for item in sources]
-        c1, c2 = st.columns([2, 1])
-        query = c1.text_input("İlan ara", placeholder="Kurum, pozisyon, şehir veya anahtar kelime")
-        selected_source = c2.selectbox("Kaynak", source_names)
-        statuses = ["Tümü", "Başvuru Açık", "Başvuru Başlamadı", "Başvuru Sona Erdi"]
-        selected_status = st.selectbox("Başvuru durumu", statuses)
-        params = {"limit": 100}
-        if query.strip():
-            params["q"] = query.strip()
-        if selected_source != "Tüm kaynaklar":
-            params["source"] = selected_source
-        if selected_status != "Tümü":
-            params["status"] = selected_status
-        response = public_api_get("/public/listings", params)
-        st.caption(f"{response['total']} ilan")
-
-        for job in response["items"]:
-            with st.container(border=True):
-                st.markdown(f"#### {job['title']}")
-                st.write(f"**Kurum:** {job['organization']} · **Kaynak:** {job['source_name']}")
-                c1, c2, c3 = st.columns(3)
-                c1.write(f"Başvuru: {job['application_status']}")
-                c2.write(f"Şehir: {job['city'] or 'Belirtilmemiş'}")
-                c3.write(f"Son tarih: {job['application_deadline'] or 'Belirtilmemiş'}")
-                if job["source_url"]:
-                    st.link_button("Resmî ilan detayına git", job["source_url"])
     except Exception as exc:
         show_api_error(exc)
 
@@ -707,13 +630,8 @@ elif page == "📅 Başvuru Takvimi":
     </div>
     """, unsafe_allow_html=True)
     try:
-        params = {"limit": 100}
-        if DEMO_MODE:
-            response = public_api_get("/public/listings", params)
-            jobs = response["items"]
-        else:
-            response = api_get("/public/matches")
-            jobs = response["jobs"]
+        response = api_get("/public/matches")
+        jobs = response["jobs"]
 
         dated_jobs = [
             job for job in jobs
@@ -732,6 +650,19 @@ elif page == "📅 Başvuru Takvimi":
                 )
                 if job.get("source_url"):
                     st.link_button("Resmî ilan detayına git", job["source_url"])
+    except Exception as exc:
+        show_api_error(exc)
+
+elif DEMO_MODE and page == "👤 Aday Profili":
+    st.markdown("""
+    <div class="main-header">
+        <h1>👤 Aday Profili</h1>
+        <p>Profilin tamamı özel erişim anahtarı doğrulandıktan sonra salt okunur görüntülenir.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    try:
+        profile = api_get("/profile")
+        st.json(profile)
     except Exception as exc:
         show_api_error(exc)
 
