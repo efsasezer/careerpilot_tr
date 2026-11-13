@@ -1,4 +1,39 @@
-# CareerPilot – Kamu + Özel Sektör Kariyer Asistanı (v0.1)
+# CareerPilot TR – Kamu Kariyer Asistanı
+
+## Modern React arayüzü
+
+Yeni arayüz `frontend/` altında React, TypeScript, Vite ve Tailwind ile
+oluşturulmuştur. Eski Streamlit arayüzü yerel/Render uyumluluğu için
+`frontend/app.py` konumunda kalır; kopyası `legacy/streamlit/` altındadır.
+Render Blueprint, mevcut FastAPI ve Streamlit servislerine ek olarak React
+statik sitesini `careerpilot-tr-web` adıyla tanımlar.
+
+Ön koşul: Node.js 20 veya üstü ve npm.
+
+```powershell
+Set-Location frontend
+npm ci
+$env:VITE_API_URL = "http://127.0.0.1:8000"
+npm run dev
+```
+
+Tarayıcıdaki Vite uygulaması `http://localhost:5173` adresinde açılır. React
+arayüzü FastAPI'nin salt okunur GET uçlarını kullanır; sunucu tarafından
+hesaplanan uygunluk sonuçlarını yeniden hesaplamaz. Backend erişim anahtarı
+statik dosyalara veya Vite değişkenlerine konmamalıdır. Giriş ekranında
+sağlanan anahtar yalnızca tarayıcı belleğinde tutulur ve `/auth/check` ile
+doğrulanır. Böylece API anahtarı frontend build'ine gömülmez.
+
+Frontend doğrulaması:
+
+```powershell
+npm test
+npm run build
+```
+
+Render statik sitesinin `VITE_API_URL` değeri `https://careerpilot-tr-api.onrender.com`
+olarak ayarlanmıştır. Streamlit servisi ayrı kalır ve sunucu tarafındaki
+`CAREERPILOT_ACCESS_TOKEN` değerini kullanır.
 
 Bu ilk sürümün amacı iki farklı kariyer kanalını tek uygulamada toplamak:
 
@@ -53,9 +88,9 @@ streamlit run frontend/app.py
 
 Arayüz normalde `http://localhost:8501` adresinde açılır.
 
-## Herkese açık salt okunur demo
+## Salt okunur özel yayın
 
-Uygulamayı internete açmadan önce her iki süreçte de demo modunu etkinleştir. Bu modda tüm GET uçları (aday profili ve eşleştirmeler dâhil) okunabilir; POST, PUT, PATCH ve DELETE istekleri engellenir.
+Uygulamayı internete açmadan önce her iki süreçte de demo modunu etkinleştir. Bu modda POST, PUT, PATCH ve DELETE istekleri engellenir. Profil ve uygunluk analizleri dâhil tüm GET uçları erişim anahtarı ister; yalnızca `/health` anahtarsızdır.
 
 **Gizlilik uyarısı:** `/profile` kişisel aday bilgilerini, puanları, tercihleri ve notları döndürür; `/public/matches` bu profil ile hesaplanan sonuçları da gösterebilir. Bu uçlar erişim denetimi olmadan internete açılırsa herkes bu bilgileri okuyabilir. Kişisel veriler içeren `careerpilot.db` dosyasını GitHub'a veya herkese açık bir servise göndermeden önce deponun Private olduğunu doğrula ve bu verilerin paylaşılmasını ayrıca değerlendir.
 
@@ -74,11 +109,17 @@ $env:CAREERPILOT_API_URL = "http://127.0.0.1:8000"
 streamlit run frontend/app.py --server.address 0.0.0.0
 ```
 
-Bir barındırma servisine dağıtırken `CAREERPILOT_DEMO_MODE=true` değişkenini mutlaka ayarla. Demo modu yazma işlemlerini engeller ancak GET yanıtlarındaki kişisel verileri gizlemez.
+Yerel demo kullanımı için backend terminalinde ayrıca bir test anahtarı belirle ve arayüzde sorulduğunda gir:
+
+```powershell
+$env:CAREERPILOT_ACCESS_TOKEN = "yalnizca-yerel-test-anahtari"
+```
+
+Bu örnek anahtarı internette kullanma. Render'da üretilen erişim anahtarını herkese açık paylaşmak, profil ve analiz verilerini de herkese açar.
 
 ## Render Blueprint yayını
 
-Proje kökündeki `render.yaml`, aynı GitHub deposundan iki ücretsiz Web Service tanımlar: mevcut `careerpilot-tr-api` FastAPI servisi ve ona bağlanan `careerpilot-tr-frontend` Streamlit servisi. Frontend servisindeki `API_URL`, `https://careerpilot-tr-api.onrender.com` değerine ayarlanmıştır; yerel geliştirmede kodun varsayılanı `http://127.0.0.1:8000` olarak kalır. Her iki servis de salt-okunur demo modunda çalışır. `autoDeploy: false` nedeniyle GitHub'a push tek başına dağıtım başlatmaz; Render Blueprint değişikliklerini inceleyip uygulamak gerekir.
+Proje kökündeki `render.yaml`, aynı GitHub deposundan iki ücretsiz Web Service tanımlar: mevcut `careerpilot-tr-api` FastAPI servisi ve ona bağlanan `careerpilot-tr-frontend` Streamlit servisi. Frontend servisindeki `API_URL`, `https://careerpilot-tr-api.onrender.com` değerine ayarlanmıştır; yerel geliştirmede kodun varsayılanı `http://127.0.0.1:8000` olarak kalır. Backend Blueprint'i `CAREERPILOT_ACCESS_TOKEN` için gizli bir değer üretir; Render `fromService` referansı bu değeri doğrudan frontend sunucusunun ortamına aktarır. Streamlit sunucusu anahtarı API isteklerine ekler; ziyaretçiden parola istenmez ve anahtar tarayıcıya verilmez. Veri değiştiren istekler kapalıdır. Bu nedenle yayındaki siteyi açan herkes profil ve uygunluk analizlerini görebilir; bu kişisel verilerin herkese açık olacağını göz önünde bulundur. `autoDeploy: false` nedeniyle GitHub'a push tek başına dağıtım başlatmaz; Render Blueprint değişikliklerini inceleyip uygulamak gerekir.
 
 Render ücretsiz servislerinin yerel dosya sistemi kalıcı değildir; SQLite dosyasında çalışma sırasında yapılan değişiklikler yeniden başlatma veya yeni dağıtımda kaybolabilir. Frontend sağlık kontrolü `/_stcore/health`, API sağlık kontrolü `/health` yolunu kullanır.
 
@@ -116,11 +157,13 @@ Bu sınıflandırma başvuru/atama garantisi vermez. Özellikle pozisyon bazınd
 
 ## 7. Şu anki teknik yapı
 
-- **Streamlit:** Web arayüzü
+- **React, TypeScript, Vite ve Tailwind:** Yeni web arayüzü
+- **Streamlit:** Mevcut/legacy web arayüzü
 - **FastAPI:** Backend / REST API
 - **SQLAlchemy + SQLite:** Veri saklama
-- **Pandas:** Analiz tablosu
+- **TanStack Query, Recharts ve Lucide:** İstemci veri yönetimi, grafikler ve ikonlar
 - **pytest:** Temel testler
+- **Vitest ve Testing Library:** Frontend testleri
 
 ## 8. Sonraki geliştirme aşamaları
 
