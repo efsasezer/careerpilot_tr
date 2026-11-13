@@ -3,8 +3,22 @@ from datetime import date, datetime
 import pandas as pd
 import requests
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
-API_URL = os.getenv("CAREERPILOT_API_URL", "http://127.0.0.1:8000")
+try:
+    API_URL = (
+        os.getenv("API_URL")
+        or os.getenv("CAREERPILOT_API_URL")
+        or st.secrets.get("API_URL")
+        or st.secrets.get("CAREERPILOT_API_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
+except StreamlitSecretNotFoundError:
+    API_URL = (
+        os.getenv("API_URL")
+        or os.getenv("CAREERPILOT_API_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
 DEMO_MODE = os.getenv("CAREERPILOT_DEMO_MODE", "").strip().casefold() in {"1", "true", "yes", "on"}
 
 st.set_page_config(
@@ -203,7 +217,8 @@ with st.sidebar:
     st.divider()
 
     try:
-        api_get("/health")
+        health = api_get("/health")
+        DEMO_MODE = DEMO_MODE or health.get("demo_mode", False)
         st.success("🟢 API Bağlantısı Aktif")
     except Exception:
         st.error("🔴 API Bağlantısı Yok (Port 8000)")

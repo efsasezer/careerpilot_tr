@@ -10,6 +10,12 @@ from backend.database import Base
 from backend.models import Job
 
 
+def test_health_reports_read_only_demo_status(monkeypatch):
+    monkeypatch.setattr(main, "DEMO_MODE", True)
+
+    assert main.health()["demo_mode"] is True
+
+
 def build_request(method, path):
     return Request({
         "type": "http",

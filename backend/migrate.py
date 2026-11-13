@@ -6,7 +6,16 @@ Mevcut verileri KORUR, yalnızca eksik sütunları ekler.
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parents[1] / "careerpilot.db"
+from sqlalchemy.engine import make_url
+
+from .database import DATABASE_URL
+
+
+def migration_database_path() -> Path | None:
+    url = make_url(DATABASE_URL)
+    if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
+        return None
+    return Path(url.database)
 
 
 def add_column_if_missing(cursor, table, column, col_type, default=None):
@@ -23,14 +32,18 @@ def add_column_if_missing(cursor, table, column, col_type, default=None):
 
 
 def migrate():
-    if not DB_PATH.exists():
-        print(f"Veritabanı henüz yok: {DB_PATH} — migration atlanıyor.")
+    db_path = migration_database_path()
+    if db_path is None:
+        print("SQLite olmayan veya bellek içi veritabanı — migration atlanıyor.")
+        return
+    if not db_path.exists():
+        print(f"Veritabanı henüz yok: {db_path} — migration atlanıyor.")
         return
 
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    print(f"\nMigration başlatılıyor: {DB_PATH}")
+    print(f"\nMigration başlatılıyor: {db_path}")
 
     # --- jobs tablosu ---
     print("\n[jobs tablosu]")

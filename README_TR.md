@@ -74,6 +74,23 @@ streamlit run frontend/app.py --server.address 0.0.0.0
 
 Bir barındırma servisine dağıtırken `CAREERPILOT_DEMO_MODE=true` değişkenini mutlaka ayarla, veritabanı için kalıcı disk kullan ve yalnızca web arayüzü portunu internete aç. SQLite dosyası kalıcı diskte değilse yeniden başlatmada kaybolabilir. Bu proje klasöründeki veritabanı ve kişisel profil verilerini herkese açık depoya yükleme.
 
+## Render API yayını
+
+Proje kökündeki `render.yaml`, `backend.main:app` FastAPI servisini, `/health` sağlık kontrolünü, Python build adımını, `PORT` kullanan başlangıç komutunu ve `/var/data` kalıcı diskini tanımlar. Blueprint servisi `starter` planını kullanır; bu plan ve kalıcı disk Render'da ücretlidir. `autoDeploy: false` nedeniyle GitHub'a push tek başına otomatik dağıtım başlatmaz.
+
+1. Değişiklikleri GitHub deposuna gönder.
+2. Render'da **New → Blueprint** ile aynı depoyu seç ve `render.yaml` yapılandırmasını inceleyerek onayla.
+3. Servisin deploy loglarında `/health` kontrolünün başarılı olduğunu doğrula.
+4. Render servisinin `https://<servis-adı>.onrender.com` adresini Streamlit Community Cloud ayarlarında **Secrets** bölümüne ekle:
+
+   ```toml
+   API_URL = "https://<servis-adı>.onrender.com"
+   ```
+
+   Ön yüz `API_URL` ortam değişkenini, yoksa `API_URL` Streamlit secret'ını okur; yerel varsayılan `http://127.0.0.1:8000` olarak kalır. Arayüz backend `/health` yanıtından demo modunu algılar.
+
+`careerpilot.db` `.gitignore` tarafından Git dışında tutulur. Yerel dosya mevcut kurulumda 108 ilan ve bir aday profili içeriyor; dosya repoya eklenmemeli. Bu nedenle Render üzerindeki yeni kalıcı disk başlangıçta boş bir veritabanı oluşturur ve yerel kayıtlar otomatik kopyalanmaz. Mevcut ilanları yayına taşımak istersen aday profilini, özel sektör kayıtlarını ve kişisel notları dışarıda bırakan, yalnızca paylaşımı uygun kamu ilanlarından oluşan güvenli bir içe aktarma işlemi ayrıca yapılmalıdır. Yerel veritabanı dosyası değiştirilmez veya silinmez.
+
 ## 4. İlk deneme sırası
 
 1. **Profilim:** Eğitim seviyeni, bölümünü ve KPSS P3 puanını gir. Beceri alanına kanıtlayabildiğin teknolojileri yaz.

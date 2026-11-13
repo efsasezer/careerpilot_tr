@@ -157,6 +157,7 @@ def health():
         "status": "ok",
         "app": "CareerPilot TR API",
         "version": "0.4.0",
+        "demo_mode": DEMO_MODE,
     }
 
 
