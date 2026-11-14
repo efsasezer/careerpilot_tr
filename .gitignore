@@ -15,4 +15,5 @@ coverage/
 secrets/
 *.tmp
 *.log
+*.backup.*
 .DS_Store

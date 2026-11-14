@@ -63,7 +63,7 @@ function SignInPage() {
             Güvenli oturum aç
           </button>
         </form>
-        <div className="privacy-note"><ShieldCheck size={17} /> Salt okunur özel erişim</div>
+        <div className="privacy-note"><ShieldCheck size={17} /> Özel erişim anahtarı</div>
         <p className="api-address">API · {getApiUrl()}</p>
       </section>
     </main>

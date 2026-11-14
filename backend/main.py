@@ -1,8 +1,11 @@
 import os
 import secrets
+import json
+import re
+import time
 from datetime import date, datetime
 from datetime import timedelta
-import re
+from hashlib import sha256
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +14,15 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import CandidateProfile, Job
+from .models import (
+    CandidateProfile,
+    DocumentPosition,
+    Job,
+    JobDocument,
+    JobDocumentScan,
+    SourceListing,
+    SourceSyncHistory,
+)
 from .schemas import (
     BulkJobCreate,
     JobCreate,
@@ -25,6 +36,7 @@ from .eligibility import (
     classify_public_job,
     detect_recruitment_method,
     detect_application_status,
+    normalize_text,
 )
 from .kariyerkapisi import (
     DETAIL_MARKER,
@@ -33,6 +45,7 @@ from .kariyerkapisi import (
 )
 from .migrate import migrate as run_migrations
 from .sources.registry import get_source_registry
+from .document_sync import sync_jobs_documents
 
 
 # ============================================================
@@ -62,7 +75,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(CORS_ORIGINS),
     allow_credentials=False,
-    allow_methods=["GET", "HEAD", "OPTIONS"],
+    allow_methods=["GET", "HEAD", "OPTIONS", "POST"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -180,13 +193,7 @@ def parse_turkish_date(date_text: str) -> date | None:
 
 
 def public_application_status(start_date: date | None, end_date: date | None, today: date) -> str:
-    if start_date and start_date > today:
-        return "Başvuru Başlamadı"
-    if end_date and end_date < today:
-        return "Başvuru Sona Erdi"
-    if start_date and end_date:
-        return "Başvuru Açık"
-    return "Tarih belirtilmemiş"
+    return detect_application_status(start_date, end_date, today)
 
 
 @app.get("/health")
@@ -330,85 +337,72 @@ def decompose_job_positions(job: Job) -> list[dict]:
     title_norm = (job.title or "").lower()
     org_norm = (job.organization or "").lower()
 
+    if job.source_name == "SBB Kamu İlanları":
+        return [{
+            "sub_id": str(job.id),
+            "parent_id": job.id,
+            "organization": job.organization or "Kaynakta bulunamadı",
+            "title": job.title,
+            "position": job.title or "Kaynakta bulunamadı",
+            "quota": job.quota or None,
+            "city": job.city or None,
+            "kpss_score_type": job.kpss_score_type,
+            "kpss_min_score": job.kpss_min_score,
+            "education_requirement": job.education_requirement,
+            "qualification_codes": job.qualification_codes,
+            "description": job.description,
+            "source_url": job.source_url,
+            "source_name": job.source_name,
+            "application_start": job.application_start,
+            "application_deadline": job.application_deadline,
+            "recruitment_method": job.recruitment_method or "Kaynakta belirtilmedi",
+            "employment_type": job.employment_type or "Kaynakta belirtilmedi",
+        }]
+
     # 1. TÜRKŞEKER Pozisyonları
     if "şeker fabrikaları" in org_norm or "turkseker" in title_norm or "şeker fabrikaları" in title_norm:
+        announced_positions = (
+            ("bilgisayar-muhendisi", "Bilgisayar Mühendisi"),
+            ("elektrik-elektronik-muhendisi", "Elektrik-Elektronik Mühendisi"),
+            ("gida-muhendisi", "Gıda Mühendisi"),
+            ("insaat-muhendisi", "İnşaat Mühendisi"),
+            ("kimya-muhendisi", "Kimya Mühendisi"),
+            ("makine-muhendisi", "Makine Mühendisi"),
+            ("metalurji-muhendisi", "Metalurji Mühendisi"),
+            ("ziraat-muhendisi", "Ziraat Mühendisi"),
+            ("insaat-teknikeri", "İnşaat Teknikeri"),
+            ("makine-teknikeri", "Makine Teknikeri"),
+        )
+        source_text = re.sub(r"[^a-z0-9]+", " ", normalize_text(job.description or ""))
+        positions = [
+            (slug, position)
+            for slug, position in announced_positions
+            if re.sub(r"[^a-z0-9]+", " ", normalize_text(position)) in source_text
+        ]
+        if not positions:
+            positions = [("ilan", job.title or "Pozisyon bilgisi kaynakta doğrulanamadı")]
+
         return [
             {
-                "sub_id": f"{job.id}-ce",
+                "sub_id": f"{job.id}-{slug}",
                 "parent_id": job.id,
                 "organization": job.organization,
-                "title": f"{job.title} — Bilgisayar Mühendisi",
-                "position": "Bilgisayar Mühendisi",
-                "quota": "2",
-                "city": "Ankara",
-                "kpss_score_type": "P3",
-                "kpss_min_score": 70.0,
-                "education_requirement": "Fakültelerin dört yıllık Bilgisayar Mühendisliği bölümlerinden mezun olmak",
-                "qualification_codes": "",
-                "description": job.description,
+                "title": f"{job.title} — {position}",
+                "position": position,
+                "quota": job.quota or None,
+                "city": job.city or None,
+                "kpss_score_type": job.kpss_score_type or "",
+                "kpss_min_score": job.kpss_min_score,
+                "education_requirement": job.education_requirement or "",
+                "qualification_codes": job.qualification_codes or "",
+                "description": job.description or "",
                 "source_url": job.source_url,
                 "source_name": job.source_name or "Kariyer Kapısı",
                 "application_start": job.application_start,
                 "application_deadline": job.application_deadline,
-                "recruitment_method": "Kurum giriş sınavı",
-            },
-            {
-                "sub_id": f"{job.id}-ee",
-                "parent_id": job.id,
-                "organization": job.organization,
-                "title": f"{job.title} — Elektrik-Elektronik Mühendisi",
-                "position": "Elektrik-Elektronik Mühendisi",
-                "quota": "Belirtilmemiş",
-                "city": "Taşra Teşkilatı",
-                "kpss_score_type": "P3",
-                "kpss_min_score": 70.0,
-                "education_requirement": "Elektrik-Elektronik Mühendisliği mezunu olmak",
-                "qualification_codes": "",
-                "description": "Elektrik-Elektronik Mühendisliği bölümünden mezun olmak.\n" + job.description,
-                "source_url": job.source_url,
-                "source_name": job.source_name or "Kariyer Kapısı",
-                "application_start": job.application_start,
-                "application_deadline": job.application_deadline,
-                "recruitment_method": "Kurum giriş sınavı",
-            },
-            {
-                "sub_id": f"{job.id}-makine",
-                "parent_id": job.id,
-                "organization": job.organization,
-                "title": f"{job.title} — Makine Mühendisi",
-                "position": "Makine Mühendisi",
-                "quota": "Belirtilmemiş",
-                "city": "Taşra Teşkilatı",
-                "kpss_score_type": "P3",
-                "kpss_min_score": 70.0,
-                "education_requirement": "Makine Mühendisliği mezunu olmak",
-                "qualification_codes": "",
-                "description": "Makine Mühendisliği bölümünden mezun olmak.\n" + job.description,
-                "source_url": job.source_url,
-                "source_name": job.source_name or "Kariyer Kapısı",
-                "application_start": job.application_start,
-                "application_deadline": job.application_deadline,
-                "recruitment_method": "Kurum giriş sınavı",
-            },
-            {
-                "sub_id": f"{job.id}-diger",
-                "parent_id": job.id,
-                "organization": job.organization,
-                "title": f"{job.title} — Diğer Branşlar (İnşaat, Ziraat, Kimya, Tekniker)",
-                "position": "İnşaat/Ziraat/Kimya Mühendisi ve Tekniker",
-                "quota": "Belirtilmemiş",
-                "city": "Taşra Teşkilatı",
-                "kpss_score_type": "P3",
-                "kpss_min_score": 70.0,
-                "education_requirement": "İnşaat, Ziraat, Kimya Mühendisliği veya Teknikerlik bölümlerinden mezun olmak",
-                "qualification_codes": "",
-                "description": "İnşaat, Ziraat veya Kimya Mühendisliği mezunu olmak.\n" + job.description,
-                "source_url": job.source_url,
-                "source_name": job.source_name or "Kariyer Kapısı",
-                "application_start": job.application_start,
-                "application_deadline": job.application_deadline,
-                "recruitment_method": "Kurum giriş sınavı",
-            },
+                "recruitment_method": detect_recruitment_method(job.title or "", job.description or ""),
+            }
+            for slug, position in positions
         ]
 
     # 2. MARMARA ÜNİVERSİTESİ Pozisyonları
@@ -617,6 +611,29 @@ def public_matches(db: Session = Depends(get_db)):
     all_jobs = list(db.scalars(
         select(Job).where(Job.sector == "public").order_by(Job.id.desc())
     ).all())
+    job_ids = [job.id for job in all_jobs]
+    scans_by_job = {
+        scan.job_id: scan
+        for scan in db.scalars(
+            select(JobDocumentScan).where(JobDocumentScan.job_id.in_(job_ids))
+        ).all()
+    } if job_ids else {}
+    documents = list(db.scalars(
+        select(JobDocument).where(JobDocument.job_id.in_(job_ids))
+        .order_by(JobDocument.id)
+    ).all()) if job_ids else []
+    documents_by_id = {document.id: document for document in documents}
+    documents_by_job: dict[int, list[JobDocument]] = {}
+    for document in documents:
+        documents_by_job.setdefault(document.job_id, []).append(document)
+    document_positions = list(db.scalars(
+        select(DocumentPosition).where(
+            DocumentPosition.document_id.in_(documents_by_id)
+        ).order_by(DocumentPosition.document_id, DocumentPosition.row_index)
+    ).all()) if documents_by_id else []
+    positions_by_document: dict[int, list[DocumentPosition]] = {}
+    for position in document_positions:
+        positions_by_document.setdefault(position.document_id, []).append(position)
 
     today = date.today()
     classified_employment = []
@@ -647,8 +664,117 @@ def public_matches(db: Session = Depends(get_db)):
             })
             continue
 
-        # İstihdam ilanını pozisyonlarına ayrıştır
-        sub_positions = decompose_job_positions(job)
+        # A document table's row is the authoritative position boundary when present.
+        parsed_document_rows = [
+            (document, position)
+            for document in documents_by_job.get(job.id, [])
+            for position in positions_by_document.get(document.id, [])
+        ]
+        shared_document_conditions = [
+            document.shared_requirements
+            for document in documents_by_job.get(job.id, [])
+            if document.shared_requirements
+        ]
+        shared_text = "\n".join(shared_document_conditions)
+        if parsed_document_rows:
+            base_position = decompose_job_positions(job)[0]
+            sub_positions = []
+            seen_position_keys = set()
+            for document, document_position in parsed_document_rows:
+                position_title = (
+                    document_position.position_title
+                    or document_position.education_requirement
+                    or "Kaynakta belirtilmedi"
+                )
+                description = "\n".join(filter(None, (
+                    job.description,
+                    shared_text,
+                    document_position.requirements_text,
+                )))
+                position_key = normalize_text("|".join((
+                    position_title,
+                    document_position.education_requirement,
+                    document_position.quota,
+                    document_position.kpss_score_type,
+                    str(document_position.kpss_min_score),
+                    document_position.city,
+                )))
+                if position_key in seen_position_keys:
+                    continue
+                seen_position_keys.add(position_key)
+                sub_positions.append({
+                    **base_position,
+                    "sub_id": f"{job.id}-document-{document.id}-{document_position.row_index}",
+                    "title": f"{job.title} — {position_title}",
+                    "position": position_title,
+                    "quota": document_position.quota or job.quota or None,
+                    "city": document_position.city or job.city or None,
+                    "kpss_score_type": (
+                        document_position.kpss_score_type or job.kpss_score_type or ""
+                    ),
+                    "kpss_min_score": (
+                        document_position.kpss_min_score
+                        if document_position.kpss_min_score is not None
+                        else job.kpss_min_score
+                    ),
+                    "education_requirement": (
+                        document_position.education_requirement
+                        or job.education_requirement or ""
+                    ),
+                    "qualification_codes": (
+                        document_position.qualification_codes
+                        or job.qualification_codes or ""
+                    ),
+                    "description": description,
+                    "source_document_id": document.id,
+                    "written_exam_invite_text": document_position.written_exam_invite_text,
+                    "written_exam_invite_count": document_position.written_exam_invite_count,
+                })
+        else:
+            sub_positions = decompose_job_positions(job)
+            if shared_document_conditions:
+                sub_positions = [{
+                    **position,
+                    "description": "\n".join(filter(None, (
+                        position.get("description", ""),
+                        shared_text,
+                    ))),
+                } for position in sub_positions]
+
+        scan = scans_by_job.get(job.id)
+        document_review = {
+            "status": scan.status if scan else "not_scanned",
+            "error": scan.error if scan else "",
+            "checked_at": scan.checked_at.isoformat() if scan and scan.checked_at else None,
+            "documents": [
+                {
+                    "id": document.id,
+                    "title": document.title,
+                    "url": document.document_url,
+                    "status": document.status,
+                    "content_hash": document.content_hash,
+                    "parsed_content_hash": document.parsed_content_hash,
+                    "error": document.error,
+                    "checked_at": document.checked_at.isoformat() if document.checked_at else None,
+                    "positions": [
+                        {
+                            "row_index": position.row_index,
+                            "position_title": position.position_title,
+                            "education_requirement": position.education_requirement,
+                            "quota": position.quota,
+                            "kpss_score_type": position.kpss_score_type,
+                            "kpss_min_score": position.kpss_min_score,
+                            "city": position.city,
+                            "qualification_codes": position.qualification_codes,
+                            "written_exam_invite_text": position.written_exam_invite_text,
+                            "written_exam_invite_count": position.written_exam_invite_count,
+                        }
+                        for position in positions_by_document.get(document.id, [])
+                    ],
+                }
+                for document in documents_by_job.get(job.id, [])
+            ],
+        }
         for pos in sub_positions:
             match = classify_public_job(pos, profile)
             counts[match["category"]] += 1
@@ -665,16 +791,21 @@ def public_matches(db: Session = Depends(get_db)):
                 "quota": pos["quota"],
                 "source_url": pos["source_url"],
                 "source_name": pos["source_name"],
+                "announcement_date": job.announcement_date.isoformat() if job.announcement_date else None,
                 "application_start": pos["application_start"].isoformat() if pos["application_start"] else None,
                 "application_deadline": pos["application_deadline"].isoformat() if pos["application_deadline"] else None,
                 "application_status": app_status,
                 "is_expired": (app_status == "Başvuru Sona Erdi"),
                 "recruitment_method": pos["recruitment_method"],
+                "employment_type": pos.get("employment_type") or job.employment_type or "Kaynakta belirtilmedi",
                 "education_requirement": match["education"]["requirement"] or pos["education_requirement"],
                 "qualification_codes": pos["qualification_codes"] or ", ".join(match["qualification_codes"]),
                 "kpss_score_type": pos["kpss_score_type"] or "/".join(match["kpss"]["score_types"]),
                 "kpss_min_score": pos["kpss_min_score"] if pos["kpss_min_score"] is not None else match["kpss"]["minimum_score"],
                 "description": pos["description"],
+                "document_review": document_review,
+                "written_exam_invite_text": pos.get("written_exam_invite_text") or "",
+                "written_exam_invite_count": pos.get("written_exam_invite_count"),
                 "match": {
                     "category": match["category"],
                     "reason": match["reason"],
@@ -700,6 +831,16 @@ def public_matches(db: Session = Depends(get_db)):
     }
 
 
+@app.post("/documents/sync")
+def sync_public_job_documents(db: Session = Depends(get_db)):
+    jobs = list(db.scalars(
+        select(Job).where(Job.sector == "public").order_by(Job.id)
+    ).all())
+    report = sync_jobs_documents(db, jobs)
+    db.commit()
+    return report
+
+
 # ============================================================
 # KAYNAK LİSTESİ VE SENKRONİZASYON DURUMU
 # ============================================================
@@ -709,19 +850,32 @@ def list_sources(db: Session = Depends(get_db)):
     sources_data = []
     for source_key, info in SOURCES_STATUS.items():
         job_count = db.scalar(
-            select(func.count(Job.id)).where(Job.source_name == source_key)
+            select(func.count(Job.id)).where(Job.source_name == info["name"])
         ) or 0
+        history = db.scalar(
+            select(SourceSyncHistory)
+            .where(SourceSyncHistory.source_name == info["name"])
+            .order_by(SourceSyncHistory.checked_at.desc(), SourceSyncHistory.id.desc())
+            .limit(1)
+        )
         sources_data.append({
             "name": info["name"],
             "url": info["url"],
             "description": info["description"],
-            "status": info["status"],
+            "status": (
+                "Aktif" if history and history.status == "ok"
+                else "Kısmi (ilan listesi)" if history and history.status == "partial"
+                else "Hata" if history
+                else info["status"]
+            ),
             "job_count": job_count,
-            "last_sync": info["last_sync"],
-            "last_found": info["last_found"],
-            "last_created": info["last_created"],
-            "last_updated": info["last_updated"],
-            "last_error": info["last_error"],
+            "last_sync": history.checked_at.isoformat(timespec="seconds") if history else info["last_sync"],
+            "last_found": history.found if history else info["last_found"],
+            "last_created": history.imported if history else info["last_created"],
+            "last_updated": history.updated if history else info["last_updated"],
+            "last_detail_failed": history.detail_failed if history else 0,
+            "pages_checked": history.pages_checked if history else 0,
+            "last_error": (history.error or None) if history else info["last_error"],
         })
     return sources_data
 
@@ -737,6 +891,7 @@ def public_summary(db: Session = Depends(get_db)):
             Job.source_name,
             Job.source_url,
             Job.application_start,
+            Job.announcement_date,
             Job.application_deadline,
             Job.created_at,
             Job.updated_at,
@@ -770,6 +925,7 @@ def public_summary(db: Session = Depends(get_db)):
                 "source_name": job.source_name or "Kaynak belirtilmemiş",
                 "source_url": job.source_url or None,
                 "application_start": job.application_start.isoformat() if job.application_start else None,
+                "announcement_date": job.announcement_date.isoformat() if job.announcement_date else None,
                 "application_deadline": job.application_deadline.isoformat() if job.application_deadline else None,
                 "application_status": application_status,
             })
@@ -804,8 +960,10 @@ def public_listings(
         Job.source_name,
         Job.source_url,
         Job.application_start,
+        Job.announcement_date,
         Job.application_deadline,
         Job.recruitment_method,
+        Job.employment_type,
         Job.quota,
         Job.kpss_score_type,
     ).where(Job.sector == "public").order_by(Job.created_at.desc(), Job.id.desc())
@@ -836,9 +994,11 @@ def public_listings(
             "source_name": job.source_name or "Kaynak belirtilmemiş",
             "source_url": job.source_url or None,
             "application_start": job.application_start.isoformat() if job.application_start else None,
+            "announcement_date": job.announcement_date.isoformat() if job.announcement_date else None,
             "application_deadline": job.application_deadline.isoformat() if job.application_deadline else None,
             "application_status": application_status,
             "recruitment_method": job.recruitment_method or None,
+            "employment_type": job.employment_type or None,
             "quota": job.quota or None,
             "kpss_score_type": job.kpss_score_type or None,
         })
@@ -875,44 +1035,412 @@ def source_listings(source: str, db: Session = Depends(get_db)):
 
 @app.post("/sources/sync-all")
 def sync_all_sources(db: Session = Depends(get_db)):
+    def labeled_value(text: str, labels: tuple[str, ...]) -> str:
+        label_pattern = "|".join(re.escape(label) for label in labels)
+        match = re.search(
+            rf"^\s*(?:{label_pattern})\s*[:：]\s*(.+?)\s*$",
+            text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        return match.group(1).strip() if match else ""
+
+    def hash_value(value: str) -> str:
+        return sha256(value.encode("utf-8")).hexdigest()
+
+    def stable_job_key(value: str) -> str:
+        return re.sub(r"[\W_]+", " ", value.casefold(), flags=re.UNICODE).strip()
+
+    def normalized_listing_key(value: str) -> str:
+        normalized = normalize_text(value or "")
+        return re.sub(r"[^a-z0-9]+", " ", normalized).strip()
+
     registry = get_source_registry()
     source_reports = {}
-    for name, source in registry.items():
+    for source_key, source in registry.items():
         source_name = source.source_name
-        now = datetime.now()
+        checked_at = datetime.now()
+        report = {
+            "status": "ok",
+            "source": source_name,
+            "pages_checked": 0,
+            "found": 0,
+            "imported": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "detail_failed": 0,
+            "error": None,
+        }
         try:
-            listings = source.fetch_listings() or []
-            records = 0
+            listings = source.fetch_listings()
+            report["pages_checked"] = source.pages_checked
+            report["found"] = len(listings)
+
             for item in listings:
-                detail_url = item.get("detail_url") or item.get("source_url")
-                if not detail_url:
+                detail_url = str(item.get("detail_url") or "").strip()
+                external_id = str(item.get("external_id") or detail_url).strip()
+                if not detail_url or not external_id:
+                    report["detail_failed"] += 1
                     continue
-                existing = db.scalar(select(Job).where(Job.source_url == detail_url).limit(1))
-                if existing:
+
+                list_hash = str(item.get("content_hash") or hash_value(json.dumps(
+                    item, ensure_ascii=False, sort_keys=True, default=str
+                )))
+                source_listing = db.scalar(
+                    select(SourceListing).where(
+                        SourceListing.source_key == source_key,
+                        SourceListing.external_id == external_id,
+                    )
+                )
+                if source_listing is None:
+                    source_listing = db.scalar(
+                        select(SourceListing).where(
+                            SourceListing.source_key == source_key,
+                            SourceListing.official_url == detail_url,
+                        )
+                    )
+                existing_job = db.scalar(
+                    select(Job).where(Job.source_url == detail_url).limit(1)
+                )
+                if source_listing is None:
+                    source_listing = SourceListing(
+                        source_key=source_key,
+                        external_id=external_id,
+                        official_url=detail_url,
+                        list_hash=list_hash,
+                        raw_payload=json.dumps(item, ensure_ascii=False, sort_keys=True, default=str),
+                        status="pending_detail",
+                        last_checked_at=checked_at,
+                    )
+                    db.add(source_listing)
+                    db.flush()
+                else:
+                    source_listing.official_url = detail_url
+                    source_listing.last_checked_at = checked_at
+                    source_listing.raw_payload = json.dumps(
+                        item, ensure_ascii=False, sort_keys=True, default=str
+                    )
+                if source_listing.job_id is None and existing_job is not None:
+                    source_listing.job_id = existing_job.id
+
+                if source_key == "sbb" and item.get("listing_only"):
+                    report["listing_only"] = True
+                    if source_listing.job_id is not None:
+                        existing_job = db.get(Job, source_listing.job_id)
+                    if existing_job is None:
+                        listing_text = str(item.get("listing_text") or "")
+                        target_keys = {
+                            normalized_listing_key(listing_text),
+                            normalized_listing_key(
+                                f"{item.get('institution', '')} {item.get('title', '')}"
+                            ),
+                        }
+                        candidates = db.scalars(
+                            select(Job).where(
+                                Job.sector == "public",
+                                Job.source_name == source_name,
+                            )
+                        ).all()
+                        existing_job = next(
+                            (
+                                candidate for candidate in candidates
+                                if normalized_listing_key(candidate.title) in target_keys
+                                or normalized_listing_key(
+                                    f"{candidate.organization} {candidate.title}"
+                                ) in target_keys
+                            ),
+                            None,
+                        )
+
+                    parsed_fields = {
+                        "title": item.get("title") or "Kaynakta bulunamadı",
+                        "organization": item.get("institution") or "Kaynakta bulunamadı",
+                        "city": item.get("city") or "",
+                        "source_url": item.get("source_url") or detail_url,
+                        "source_name": source_name,
+                        "description": (
+                            existing_job.description
+                            if existing_job is not None and existing_job.description
+                            else item.get("description_html") or ""
+                        ),
+                        "application_start": item.get("application_start_date"),
+                        "application_deadline": item.get("application_end_date"),
+                        "announcement_date": item.get("announcement_date"),
+                        "quota": item.get("quota") or "",
+                        "employment_type": item.get("employment_type") or "Kaynakta belirtilmedi",
+                        "recruitment_method": item.get("recruitment_method") or "Kaynakta belirtilmedi",
+                        "education_requirement": item.get("education_requirement") or "",
+                        "qualification_codes": item.get("qualification_codes") or "",
+                        "kpss_score_type": item.get("kpss_score_type") or "",
+                        "kpss_min_score": item.get("kpss_min_score"),
+                    }
+                    if existing_job is None:
+                        existing_job = Job(
+                            sector="public",
+                            is_employment=True,
+                            status="İncelenecek",
+                            **parsed_fields,
+                        )
+                        db.add(existing_job)
+                        db.flush()
+                        report["imported"] += 1
+                    else:
+                        changed = False
+                        for field, value in parsed_fields.items():
+                            if getattr(existing_job, field) != value:
+                                setattr(existing_job, field, value)
+                                changed = True
+                        if changed:
+                            existing_job.updated_at = checked_at
+                            report["updated"] += 1
+                        else:
+                            report["unchanged"] += 1
+
+                    source_listing.job_id = existing_job.id
+                    source_listing.list_hash = list_hash
+                    source_listing.content_hash = list_hash
+                    source_listing.status = "listed_only"
+                    source_listing.last_checked_at = checked_at
+                    source_listing.raw_payload = json.dumps(
+                        item, ensure_ascii=False, sort_keys=True, default=str
+                    )
+                    db.flush()
                     continue
-                db.add(Job(
-                    sector="public",
-                    title=item.get("title") or "Kamu İlanı",
-                    organization=item.get("institution") or item.get("source_name") or source_name,
-                    city=item.get("city") or "",
-                    source_url=detail_url,
-                    source_name=source_name,
-                    description=item.get("description_html") or item.get("title") or "",
-                    application_deadline=parse_turkish_date(item.get("application_end_date") or item.get("announcement_date") or "") if item.get("application_end_date") or item.get("announcement_date") else None,
-                    recruitment_method="Kaynak otomasyonu",
-                    status="İncelenecek",
-                ))
-                records += 1
+
+                needs_detail = (
+                    source_listing.job_id is None
+                    or source_listing.status != "complete"
+                    or source_listing.list_hash != list_hash
+                )
+                if not needs_detail:
+                    report["unchanged"] += 1
+                    continue
+
+                try:
+                    details = source.fetch_detail(detail_url)
+                    source_text = str(details.get("source_text") or "").strip()
+                    if len(source_text) < 80:
+                        raise ValueError("Ayrıştırılabilir ilan metni bulunamadı.")
+                    listing_title = str(item.get("title") or "").strip()
+                    detail_title = str(details.get("title") or "").strip()
+                    title = detail_title or listing_title
+                    if not title or (
+                        listing_title
+                        and stable_job_key(listing_title) not in stable_job_key(source_text)
+                        and stable_job_key(detail_title) not in stable_job_key(source_text)
+                    ):
+                        raise ValueError(
+                            "İlan detay metni liste kaydıyla eşleşmedi; tamamlanmış kayıt olarak işlenmedi."
+                        )
+
+                    organization = str(
+                        details.get("institution")
+                        or item.get("institution")
+                        or labeled_value(source_text, ("Kurum Adı", "Kurum", "İdare"))
+                    ).strip()
+                    if not organization:
+                        organization = "Kurum belirtilmemiş"
+
+                    start_text = str(
+                        details.get("start_date")
+                        or labeled_value(source_text, (
+                            "Başvuru Başlangıç Tarihi", "Başvuru Başlangıcı",
+                        ))
+                    )
+                    deadline_text = str(
+                        details.get("end_date")
+                        or labeled_value(source_text, (
+                            "Son Başvuru Tarihi / Saati", "Son Başvuru Tarihi",
+                            "Başvuru Bitiş Tarihi", "Başvuru Bitişi",
+                        ))
+                    )
+                    announcement_text = str(
+                        details.get("announcement_date")
+                        or labeled_value(source_text, (
+                            "İlan Tarihi", "Yayımlanma Tarihi", "Duyuru Tarihi",
+                        ))
+                    )
+                    kpss_type = str(
+                        details.get("kpss_score_type")
+                        or (re.search(r"\bKPSS\s*[- ]?(P\d+)\b", source_text, re.I) or [None, ""])[1]
+                    )
+                    minimum = details.get("kpss_min_score")
+                    if minimum is None:
+                        score_match = re.search(
+                            r"KPSS.{0,80}?(?:en az|asgari)\s*(\d{2}(?:[.,]\d+)?)",
+                            source_text,
+                            re.I | re.S,
+                        )
+                        if score_match:
+                            minimum = float(score_match.group(1).replace(",", "."))
+                    city = str(
+                        details.get("city")
+                        or labeled_value(source_text, ("Görev Yeri", "Çalışma Yeri", "İl"))
+                    ).strip()
+                    quota = str(
+                        details.get("quota")
+                        or labeled_value(source_text, ("Kontenjan", "Adet", "Kişi Sayısı"))
+                    ).strip()
+                    education = str(
+                        details.get("departments")
+                        or details.get("education_requirement")
+                        or labeled_value(source_text, (
+                            "Mezun Olunacak Bölümler", "Bölüm Şartı",
+                            "Mezuniyet Bölümleri", "Öğrenim Durumu",
+                        ))
+                    ).strip()
+                    position = str(
+                        details.get("position")
+                        or labeled_value(source_text, ("Pozisyon", "Ünvan", "Unvan", "Kadro Unvanı"))
+                    ).strip()
+                    record_title = title
+                    if position and stable_job_key(position) not in stable_job_key(title):
+                        record_title = f"{title} — {position}"
+
+                    def matching_date(value: str):
+                        date_match = re.search(r"\d{1,2}[./]\d{1,2}[./]\d{4}", value)
+                        return parse_turkish_date(date_match.group(0)) if date_match else parse_turkish_date(value)
+
+                    job = source_listing.job_id and db.get(Job, source_listing.job_id)
+                    if job is None:
+                        job = existing_job
+                    if job is None and organization != "Kurum belirtilmemiş":
+                        job = db.scalar(
+                            select(Job).where(
+                                Job.sector == "public",
+                                Job.title == record_title,
+                                Job.organization == organization,
+                                Job.application_deadline == matching_date(deadline_text),
+                            ).limit(1)
+                        )
+                    detail_hash = str(details.get("content_hash") or hash_value(source_text))
+                    if job is None:
+                        job = Job(
+                            sector="public",
+                            title=record_title,
+                            organization=organization,
+                            city=city,
+                            quota=quota,
+                            source_url=detail_url,
+                            source_name=source_name,
+                            description=source_text,
+                            application_start=matching_date(start_text),
+                            application_deadline=matching_date(deadline_text),
+                            announcement_date=matching_date(announcement_text),
+                            kpss_score_type=kpss_type,
+                            kpss_min_score=minimum,
+                            education_requirement=education,
+                            recruitment_method=detect_recruitment_method(title, source_text),
+                            status="İncelenecek",
+                        )
+                        db.add(job)
+                        db.flush()
+                        report["imported"] += 1
+                    else:
+                        changed = False
+                        for field, value in {
+                            "title": record_title,
+                            "organization": organization,
+                            "source_name": source_name,
+                            "description": source_text,
+                            "application_start": matching_date(start_text),
+                            "application_deadline": matching_date(deadline_text),
+                            "announcement_date": matching_date(announcement_text),
+                            "city": city,
+                            "quota": quota,
+                            "kpss_score_type": kpss_type,
+                            "kpss_min_score": minimum,
+                            "education_requirement": education,
+                        }.items():
+                            if value not in (None, "") and getattr(job, field) != value:
+                                setattr(job, field, value)
+                                changed = True
+                        if changed:
+                            job.updated_at = checked_at
+                            report["updated"] += 1
+                        else:
+                            report["unchanged"] += 1
+
+                    source_listing.job_id = job.id
+                    source_listing.list_hash = list_hash
+                    source_listing.content_hash = detail_hash
+                    source_listing.status = "complete"
+                    source_listing.last_checked_at = checked_at
+                    source_listing.raw_payload = json.dumps(
+                        {"listing": item, "details": details},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                    db.flush()
+                except Exception as error:
+                    source_listing.status = "detail_failed"
+                    source_listing.last_checked_at = checked_at
+                    report["detail_failed"] += 1
+                    report.setdefault("detail_errors", []).append({
+                        "url": detail_url,
+                        "error": str(error),
+                    })
+                time.sleep(max(0.0, float(os.getenv("CAREERPILOT_SOURCE_REQUEST_DELAY_SECONDS", "0.75"))))
+
+            report["status"] = (
+                "partial" if report.get("listing_only")
+                else "error" if report["detail_failed"]
+                else "ok"
+            )
+            if report.get("listing_only"):
+                report["detail_note"] = (
+                    "Yalnızca resmi SBB ana sayfasında listelenen alanlar işlendi; "
+                    "ilan detay sayfaları ve ayrıntılı başvuru şartları doğrulanmadı."
+                )
+            db.add(SourceSyncHistory(
+                source_key=source_key,
+                source_name=source_name,
+                status=report["status"],
+                checked_at=checked_at,
+                pages_checked=report["pages_checked"],
+                found=report["found"],
+                imported=report["imported"],
+                updated=report["updated"],
+                unchanged=report["unchanged"],
+                detail_failed=report["detail_failed"],
+                error="; ".join(item["error"] for item in report.get("detail_errors", []))
+                or report.get("detail_note", ""),
+            ))
             db.commit()
-            SOURCES_STATUS[source_name]["status"] = "Aktif"
-            SOURCES_STATUS[source_name]["last_sync"] = now.isoformat(timespec="seconds")
-            SOURCES_STATUS[source_name]["last_found"] = records
-            source_reports[name] = {"status": "ok", "imported": records, "source": source_name}
         except Exception as exc:
-            SOURCES_STATUS[source_name]["status"] = "Hata"
-            SOURCES_STATUS[source_name]["last_error"] = str(exc)
-            source_reports[name] = {"status": "error", "error": str(exc), "source": source_name}
-    return {"success": True, "results": source_reports}
+            db.rollback()
+            report["status"] = "error"
+            report["error"] = str(exc)
+            db.add(SourceSyncHistory(
+                source_key=source_key,
+                source_name=source_name,
+                status="error",
+                checked_at=checked_at,
+                pages_checked=getattr(source, "pages_checked", 0),
+                error=str(exc),
+            ))
+            db.commit()
+        SOURCES_STATUS[source_name]["status"] = (
+            "Aktif" if report["status"] == "ok" else "Hata"
+        )
+        SOURCES_STATUS[source_name]["last_sync"] = checked_at.isoformat(timespec="seconds")
+        SOURCES_STATUS[source_name]["last_found"] = report["found"]
+        SOURCES_STATUS[source_name]["last_created"] = report["imported"]
+        SOURCES_STATUS[source_name]["last_updated"] = report["updated"]
+        SOURCES_STATUS[source_name]["last_error"] = report.get("error") or report.get("detail_note")
+        source_reports[source_key] = report
+    document_scan = sync_jobs_documents(
+        db,
+        list(db.scalars(
+            select(Job).where(Job.sector == "public").order_by(Job.id)
+        ).all()),
+    )
+    db.commit()
+    return {
+        "success": all(report["status"] == "ok" for report in source_reports.values()),
+        "results": source_reports,
+        "document_scan": document_scan,
+    }
 
 
 @app.post("/sources/kariyer-kapisi/sync")

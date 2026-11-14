@@ -18,7 +18,9 @@ class JobCreate(BaseModel):
     qualification_codes: str = ""
     application_start: date | None = None
     application_deadline: date | None = None
+    announcement_date: date | None = None
     quota: str = ""
+    employment_type: str = ""
     recruitment_method: str = ""
     is_employment: bool = True
     status: str = "İncelenecek"

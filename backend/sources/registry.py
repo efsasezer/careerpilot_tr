@@ -4,6 +4,7 @@ from typing import Dict, Type
 
 from .base import BaseJobSource
 from .iskur import IskurSource
+from .kariyer_kapisi import KariyerKapisiSource
 from .sbb import SBBSource
 from .yerel_yonetimler import YerelYonetimlerSource
 
@@ -13,6 +14,7 @@ def get_source_registry() -> Dict[str, BaseJobSource]:
         "sbb": SBBSource(),
         "iskur": IskurSource(),
         "yerel-yonetimler": YerelYonetimlerSource(),
+        "kariyer-kapisi": KariyerKapisiSource(),
     }
 
 
@@ -21,4 +23,5 @@ def get_source_class_map() -> Dict[str, Type[BaseJobSource]]:
         "sbb": SBBSource,
         "iskur": IskurSource,
         "yerel-yonetimler": YerelYonetimlerSource,
+        "kariyer-kapisi": KariyerKapisiSource,
     }

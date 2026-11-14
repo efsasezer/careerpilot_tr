@@ -25,6 +25,8 @@ export interface Profile {
   updated_at: string | null;
 }
 
+export type ProfileUpdate = Omit<Profile, "id" | "updated_at">;
+
 export interface MatchDetail {
   category: MatchCategory;
   reason: string;
@@ -47,6 +49,38 @@ export interface MatchDetail {
   };
 }
 
+export interface DocumentPosition {
+  row_index: number;
+  position_title: string;
+  education_requirement: string;
+  quota: string;
+  kpss_score_type: string;
+  kpss_min_score: number | null;
+  city: string;
+  qualification_codes: string;
+  written_exam_invite_text: string;
+  written_exam_invite_count: number | null;
+}
+
+export interface SupplementaryDocument {
+  id: number;
+  title: string;
+  url: string;
+  status: string;
+  content_hash: string;
+  parsed_content_hash: string;
+  error: string;
+  checked_at: string | null;
+  positions: DocumentPosition[];
+}
+
+export interface DocumentReview {
+  status: string;
+  error: string;
+  checked_at: string | null;
+  documents: SupplementaryDocument[];
+}
+
 export interface MatchedJob {
   id: string;
   parent_job_id: number;
@@ -57,16 +91,21 @@ export interface MatchedJob {
   quota: string | null;
   source_url: string | null;
   source_name: string;
+  announcement_date: string | null;
   application_start: string | null;
   application_deadline: string | null;
   application_status: string;
   is_expired: boolean;
+  employment_type: string;
   recruitment_method: string;
   education_requirement: string;
   qualification_codes: string;
   kpss_score_type: string;
   kpss_min_score: number | null;
   description: string;
+  document_review?: DocumentReview;
+  written_exam_invite_text?: string;
+  written_exam_invite_count?: number | null;
   match: MatchDetail;
 }
 
@@ -109,7 +148,25 @@ export interface Source {
   last_found: number;
   last_created: number;
   last_updated: number;
+  last_detail_failed?: number;
+  pages_checked?: number;
   last_error: string | null;
+}
+
+export interface SourceSyncReport {
+  success: boolean;
+  results: Record<string, {
+    status: string;
+    source: string;
+    pages_checked: number;
+    found: number;
+    imported: number;
+    updated: number;
+    unchanged: number;
+    detail_failed: number;
+    error: string | null;
+    detail_errors?: Array<{ url: string; error: string }>;
+  }>;
 }
 
 export interface Job {
@@ -121,6 +178,7 @@ export interface Job {
   city: string;
   source_url: string;
   source_name: string;
+  announcement_date?: string | null;
   description: string;
   skills: string;
   kpss_score_type: string;
@@ -130,6 +188,7 @@ export interface Job {
   application_start: string | null;
   application_deadline: string | null;
   quota: string;
+  employment_type: string;
   recruitment_method: string;
   is_employment: boolean;
   status: string;

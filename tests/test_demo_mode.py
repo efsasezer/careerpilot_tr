@@ -134,6 +134,7 @@ def test_demo_allows_cors_preflight_without_a_bearer_token(monkeypatch):
     assert response_start["status"] == 200
     assert response_headers[b"access-control-allow-origin"] == b"https://careerpilot-tr-web.onrender.com"
     assert b"GET" in response_headers[b"access-control-allow-methods"]
+    assert b"POST" in response_headers[b"access-control-allow-methods"]
     assert b"authorization" in response_headers[b"access-control-allow-headers"].lower()
 
 

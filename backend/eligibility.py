@@ -178,14 +178,16 @@ def detect_recruitment_method(title: str, description: str) -> str:
 
 
 def detect_application_status(start_date: date | None, end_date: date | None, today: date | None = None) -> str:
-    """Başvuru durumunu 3 kategoriye ayırır: Başvuru Başlamadı / Başvuru Açık / Başvuru Sona Erdi."""
+    """Return a status only when the available dates support that conclusion."""
     if today is None:
         today = date.today()
     if end_date and end_date < today:
         return "Başvuru Sona Erdi"
     if start_date and start_date > today:
         return "Başvuru Başlamadı"
-    return "Başvuru Açık"
+    if start_date and end_date:
+        return "Başvuru Açık"
+    return "Tarih belirtilmemiş"
 
 
 # ----------------------------------------------------------------------------
@@ -336,7 +338,18 @@ def classify_public_job(job, candidate):
     education_evidence = _education_evidence(job, description)
     normalized_text = normalize_text("\n".join((title, position, " ".join(codes), description)))
     sentences = [(sentence, normalize_text(sentence)) for sentence in _sentences(description)]
-    mandatory = [(s, n) for s, n in sentences if not _is_preference(n)]
+    position_norm = normalize_text(f"{title} {position}")
+
+    def applies_to_position(normalized_sentence):
+        if re.search(r"\bziraat muhendisi\b.*?\b(?:pozisyon\w*\s+)?icin\b", normalized_sentence):
+            return "ziraat muhendisi" in position_norm
+        return True
+
+    mandatory = [
+        (sentence, normalized)
+        for sentence, normalized in sentences
+        if not _is_preference(normalized) and applies_to_position(normalized)
+    ]
 
     reasons, unknowns, mismatches, requirements = [], [], [], []
     candidate_is_ce = "bilgisayar" in normalize_text(candidate.get("department", ""))
@@ -474,19 +487,14 @@ def classify_public_job(job, candidate):
             add("Deneyim", "met", f"Adayın {float(have):g} yıl mesleki deneyimi ilanın şartını karşılıyor.")
 
     # ---- 6. Sürücü Belgesi -----------------------------------------------
-    # Ziraat vb. özel şartları Bilgisayar Mühendisliği için uygulamayalım
     if any(re.search(r"surucu belgesi|ehliyet", n) and re.search(r"zorunlu|sahip olmak|aranir|gereklidir", n) for _, n in mandatory):
-        # Eğer sürücü belgesi açıkça yalnızca başka bir unvan içinse (örn. "Ziraat Mühendisi pozisyonları için B sınıfı sürücü belgesi")
-        if "ziraat muhendisi" in normalized_text and "surucu belgesi" in normalized_text and not candidate_is_ce:
-            pass
+        have = candidate.get("driver_license")
+        if have is None:
+            add("Sürücü belgesi", "unknown", "Sürücü belgesi zorunlu şartı var; adayın ehliyet bilgisi bilinmiyor.")
+        elif have:
+            add("Sürücü belgesi", "met", "Sürücü belgesi şartı karşılanıyor.")
         else:
-            have = candidate.get("driver_license")
-            if have is None:
-                add("Sürücü belgesi", "unknown", "Sürücü belgesi zorunlu şartı var; adayın ehliyet bilgisi bilinmiyor.")
-            elif have:
-                add("Sürücü belgesi", "met", "Sürücü belgesi şartı karşılanıyor.")
-            else:
-                add("Sürücü belgesi", "not_met", "İlan sürücü belgesi istiyor; adayın sürücü belgesi yok.")
+            add("Sürücü belgesi", "not_met", "İlan sürücü belgesi istiyor; adayın sürücü belgesi yok.")
 
     # ---- 7. Sertifika Şartı ----------------------------------------------
     cert_sentences = [

@@ -36,6 +36,7 @@ export function AppLayout({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const health = useHealth();
+  const readOnly = health.data?.demo_mode !== false;
 
   return (
     <div className="app-shell">
@@ -63,7 +64,7 @@ export function AppLayout({
         <div className="sidebar-bottom">
           <div className="security-card">
             <ShieldCheck size={17} />
-            <span><strong>Özel oturum</strong><small>Salt okunur erişim</small></span>
+            <span><strong>Özel oturum</strong><small>{readOnly ? "Salt okunur erişim" : "Profil düzenlenebilir"}</small></span>
           </div>
           <button className="nav-link nav-logout" onClick={onLogout}><LogOut size={18} /><span>Oturumu kapat</span></button>
           <div className="sidebar-version">CareerPilot TR · API {health.data?.version ?? "…"}</div>
@@ -74,7 +75,7 @@ export function AppLayout({
           <button className="icon-button mobile-menu" onClick={() => setMenuOpen(true)} aria-label="Menüyü aç"><Menu size={21} /></button>
           <div className="topbar-context"><span className="topbar-dot" /> Kişisel kariyer çalışma alanı</div>
           <div className="topbar-right">
-            <span className="readonly-pill"><ShieldCheck size={14} /> Salt okunur</span>
+            <span className="readonly-pill"><ShieldCheck size={14} /> {readOnly ? "Salt okunur" : "Düzenlenebilir"}</span>
             <NavLink to="/settings" className="icon-button" aria-label="Ayarlar"><CircleHelp size={18} /></NavLink>
           </div>
         </header>

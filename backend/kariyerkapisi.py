@@ -120,7 +120,7 @@ def _label_values(text):
 
 
 def parse_listing_detail(html, page_url):
-    """Extract fields only from visible HTML text, never from linked documents."""
+    """Extract listing fields from visible HTML text."""
     parser = _VisibleContent()
     parser.feed(html or "")
     return parse_listing_content("\n".join(parser.text_parts))
@@ -176,6 +176,12 @@ def scrape_public_listing_details(listings):
                     if not visible_text.strip():
                         raise RuntimeError("İlan detay sayfasında okunabilir metin bulunamadı.")
                     details = parse_listing_content(visible_text)
+                    details["attachments"] = page.locator("a[href]").evaluate_all(
+                        """anchors => anchors.map(anchor => ({
+                            url: anchor.href,
+                            title: anchor.innerText.trim()
+                        })).filter(item => item.url)"""
+                    )
                     outcomes[url] = {"details": details, "error": None}
                 except Exception as error:
                     outcomes[url] = {"details": {"source_text": ""}, "error": str(error)}
@@ -212,11 +218,16 @@ def scrape_public_active_listings():
                     "Kariyer Kapısı sayfasına erişilemedi."
                 )
 
-            # İlan bağlantılarının yüklenmesini bekle
-            page.wait_for_selector(
-                'a[href*="IlanDetay"]',
-                timeout=20000
-            )
+            body_text = page.locator("body").inner_text()
+            if "şu an aktif bir ilan bulunmamaktadır" in body_text.casefold():
+                return []
+
+            try:
+                page.wait_for_selector('a[href*="IlanDetay"]', timeout=20000)
+            except PlaywrightTimeoutError as error:
+                raise RuntimeError(
+                    "Kariyer Kapısı ilan bağlantısı yüklenmedi; sayfa boş veya erişim kontrollü olabilir."
+                ) from error
 
             # Her ilan bağlantısının bulunduğu satırı oku
             raw_listings = page.locator(
