@@ -467,8 +467,9 @@ def classify_public_job(job, candidate):
         elif re.search(r"sahip olmak|aranir|zorunlu|bulunmak", normalized):
             experience_required = True
 
-    # Türkşeker gibi HTML'de özel şart tablosu olmayan ilanlarda deneyim kontrolü
-    is_turkseker_job = "turkseker" in normalized_text or "seker fabrikalari" in normalized_text
+    # Türkşeker gibi HTML'de özel şart tablosu olmayan ve henüz resmi ek belgesi taranmamış ilanlarda deneyim kontrolü
+    has_source_document = bool(_job_value(job, "source_document_id", None))
+    is_turkseker_job = ("turkseker" in normalized_text or "seker fabrikalari" in normalized_text) and not has_source_document
     if is_turkseker_job:
         experience_required = True
 
