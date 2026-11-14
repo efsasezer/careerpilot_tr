@@ -602,6 +602,39 @@ def test_turkseker_bilgisayar_muhendisi_position_is_potential_without_shift_excu
     assert any("tablo" in u.lower() or "deneyim" in u.lower() for u in r["unknown_conditions"])
 
 
+def test_turkseker_ziraat_requirements_do_not_apply_to_computer_engineer_position():
+    description = (
+        "1.9-Ziraat Mühendisi pozisyonları için B sınıfı sürücü belgesine sahip olmak.\n"
+        "1.10-Ziraat Mühendisi için son beş yılda en az 50 YDS puanı almış olmak."
+    )
+    computer_job = job(
+        title="TÜRKŞEKER - Bilgisayar Mühendisi",
+        position="Bilgisayar Mühendisi",
+        description=description,
+    )
+    agriculture_job = job(
+        title="TÜRKŞEKER - Ziraat Mühendisi",
+        position="Ziraat Mühendisi",
+        description=description,
+    )
+
+    computer_match = classify_public_job(computer_job, profile())
+    agriculture_match = classify_public_job(agriculture_job, profile())
+
+    assert not any(
+        requirement["name"] in {"Sürücü belgesi", "YDS"}
+        for requirement in computer_match["requirements"]
+    )
+    assert any(
+        requirement["name"] == "Sürücü belgesi" and requirement["status"] == "unknown"
+        for requirement in agriculture_match["requirements"]
+    )
+    assert any(
+        requirement["name"] == "YDS" and requirement["status"] == "unknown"
+        for requirement in agriculture_match["requirements"]
+    )
+
+
 def test_zafer_kalkinma_ajansi_potential_and_dates():
     from backend.eligibility import detect_application_status
     j = job(
@@ -616,6 +649,17 @@ def test_zafer_kalkinma_ajansi_potential_and_dates():
     # Başvuru henüz başlamadı kontrolü (başlangıç 25.11.2026, test günü 09.11.2026)
     status = detect_application_status(date(2026, 11, 25), date(2026, 12, 14), today=date(2026, 11, 9))
     assert status == "Başvuru Başlamadı"
+
+
+def test_missing_deadline_is_not_marked_expired():
+    from backend.eligibility import detect_application_status
+
+    today = date(2026, 11, 14)
+
+    assert detect_application_status(date(2026, 11, 1), None, today=today) == "Tarih belirtilmemiş"
+    assert detect_application_status(None, None, today=today) == "Tarih belirtilmemiş"
+    assert detect_application_status(None, date(2026, 11, 14), today=today) == "Tarih belirtilmemiş"
+    assert detect_application_status(None, date(2026, 11, 13), today=today) == "Başvuru Sona Erdi"
 
 
 def test_dokuz_eylul_recruitment_method_is_kpss_siralamasi():

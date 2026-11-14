@@ -1,83 +1,74 @@
 from __future__ import annotations
 
-import hashlib
 import re
-from html import unescape
-from typing import Any, Dict, List
+from typing import Any
+from urllib.parse import urlsplit
 
-import requests
-
-from .base import BaseJobSource
+from .base import (
+    BaseJobSource,
+    absolute_url,
+    content_hash,
+    external_id,
+    fetch_html,
+    parse_html_page,
+)
 
 
 class IskurSource(BaseJobSource):
     source_name = "İŞKUR Kamu Memur Alım İlanları"
     base_url = "https://www.iskur.gov.tr/ilanlar/kamu-memur-alim-ilanlari"
+    listing_prefix = "/ilanlar/kamu-memur-alim-ilanlari/"
 
-    def fetch_listings(self) -> List[Dict[str, Any]]:
-        try:
-            response = requests.get(self.base_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-            response.raise_for_status()
-        except Exception:
-            return []
-
-        html = response.text
-        anchors = re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, flags=re.I | re.S)
-        results: List[Dict[str, Any]] = []
+    def fetch_listings(self) -> list[dict[str, Any]]:
+        final_url, html = fetch_html(self.source_name, self.base_url)
+        links, _ = parse_html_page(html)
+        results = []
         seen: set[str] = set()
-
-        for href, label_html in anchors:
-            if not href or "javascript:" in href.lower():
+        for link in links:
+            href = link["href"].strip()
+            detail_url = absolute_url(final_url, href)
+            path = urlsplit(detail_url).path.casefold()
+            title = link["text"].strip()
+            if (
+                not path.startswith(self.listing_prefix)
+                or path.rstrip("/") == self.listing_prefix.rstrip("/")
+                or not title
+                or re.search(r"/(?:page|sayfa)/\d+/?$", path)
+            ):
                 continue
-            text = self.strip_tags(label_html)
-            if not text:
+            if detail_url in seen:
                 continue
-            lowered = text.casefold()
-            if not any(keyword in lowered for keyword in ["kamu", "memur", "personel", "alım", "alin", "açık", "kadro"]):
-                continue
-            detail_url = href if href.startswith("http") else f"https://www.iskur.gov.tr{href if href.startswith('/') else '/' + href}"
-            payload = self.normalize_listing({
+            seen.add(detail_url)
+            results.append(self.normalize_listing({
+                "source_key": "iskur",
                 "source_name": self.source_name,
                 "source_url": self.base_url,
                 "detail_url": detail_url,
-                "title": text,
-                "institution": "İŞKUR",
-                "position_title": text,
-                "city": self.extract_city_from_text(text),
-                "quota": None,
-                "announcement_date": self._extract_date(text),
+                "external_id": external_id(detail_url),
+                "title": title,
+                "institution": "",
+                "position_title": "",
+                "announcement_date": None,
                 "application_start_date": None,
-                "application_end_date": self._extract_date(text),
-                "employment_type": "Kamu memuru",
-                "description_html": f"<p>{text}</p>",
-                "source_status": "ok" if response.status_code == 200 else "error",
-                "first_seen_at": None,
-                "last_checked_at": None,
-                "content_hash": hashlib.sha1((text + detail_url).encode("utf-8")).hexdigest(),
-            })
-            key = payload["detail_url"] or payload["title"]
-            if key not in seen:
-                seen.add(key)
-                results.append(payload)
+                "application_end_date": None,
+                "description_html": "",
+                "content_hash": content_hash(title),
+                "metadata": {"list_page": final_url},
+            }))
+        self.pages_checked = 1
+        if not results:
+            raise RuntimeError(
+                "İŞKUR yanıtı HTTP 200 olsa da kamu ilanı detay bağlantısı bulunamadı."
+            )
         return results
 
-    @staticmethod
-    def strip_tags(value: str) -> str:
-        text = unescape(value or "")
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text)
-        return text.strip(" -:|•")
-
-    @staticmethod
-    def extract_city_from_text(text: str) -> str | None:
-        for city in ["ankara", "istanbul", "izmir", "trabzon", "konya", "adana", "bursa", "antalya", "gaziantep", "samsun"]:
-            if city in text.casefold():
-                return city.title()
-        return None
-
-    @staticmethod
-    def _extract_date(text: str) -> str | None:
-        match = re.search(r"(\d{1,2}[./]\d{1,2}[./]\d{4})", text)
-        if match:
-            return match.group(1)
-        return None
+    def fetch_detail(self, url: str) -> dict[str, Any]:
+        final_url, html = fetch_html(self.source_name, url)
+        _, text = parse_html_page(html)
+        if len(text) < 100:
+            raise RuntimeError(f"İŞKUR ilan detayında ayrıştırılabilir metin yok: {final_url}")
+        return {
+            "source_text": text,
+            "content_hash": content_hash(text),
+            "detail_url": final_url,
+        }

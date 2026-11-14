@@ -125,3 +125,12 @@ def test_migration_preserves_existing_database_rows(tmp_path, monkeypatch):
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT title FROM jobs WHERE id = 1").fetchone() == ("Mevcut ilan",)
         assert connection.execute("SELECT id FROM candidate_profile WHERE id = 1").fetchone() == (1,)
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_listings'"
+        ).fetchone() == ("source_listings",)
+
+    backups = list(tmp_path.glob("careerpilot.db.backup.*"))
+    assert len(backups) == 1
+    with sqlite3.connect(backups[0]) as backup:
+        assert backup.execute("SELECT title FROM jobs WHERE id = 1").fetchone() == ("Mevcut ilan",)

@@ -17,10 +17,13 @@ $env:VITE_API_URL = "http://127.0.0.1:8000"
 npm run dev
 ```
 
-Tarayıcıdaki Vite uygulaması `http://localhost:5173` adresinde açılır. React
-arayüzü FastAPI'nin salt okunur GET uçlarını kullanır; sunucu tarafından
-hesaplanan uygunluk sonuçlarını yeniden hesaplamaz. Backend erişim anahtarı
-statik dosyalara veya Vite değişkenlerine konmamalıdır. Giriş ekranında
+Tarayıcıdaki Vite uygulaması `http://localhost:5173` adresinde açılır. Aday
+profili ekranındaki **Profili düzenle** düğmesi yaş, KPSS puanı ve diğer profil
+alanlarını `/profile` API'si üzerinden kaydeder; kayıttan sonra uygunluk
+analizleri yenilenir. Bu işlem için yerel backend'i demo modu kapalı çalıştır.
+Demo modu veri değiştiren istekleri engeller. Arayüz sunucu tarafından
+hesaplanan uygunluk sonuçlarını kendisi yeniden hesaplamaz. Backend erişim
+anahtarı statik dosyalara veya Vite değişkenlerine konmamalıdır. Giriş ekranında
 sağlanan anahtar yalnızca tarayıcı belleğinde tutulur ve `/auth/check` ile
 doğrulanır. Böylece API anahtarı frontend build'ine gömülmez.
 
@@ -41,7 +44,7 @@ Bu ilk sürümün amacı iki farklı kariyer kanalını tek uygulamada toplamak:
 2. **Özel sektör:** Farklı şirketlerden ilanları kaydetmek; pozisyon gruplarına göre birden fazla ilanda geçen becerileri saymak.
 3. **Profil:** Eğitim, bölüm, KPSS P3 ve mevcut becerileri saklamak.
 
-> Bu sürüm ilan sitelerini henüz otomatik taramaz ve resmi başvuru yapmaz. Önce veri modelini ve toplu analiz mantığını çalışır hâle getiriyoruz. Kaynak entegrasyonları, PDF CV analizi, gelişmiş uygunluk kuralları, RAG, AI Agent, bildirimler ve öğrenme/tekrar sistemi sonraki aşamalardır.
+> Uygulama tanımlı kamu kaynaklarını tarayabilir; başvuru yapmaz. Aday CV'sini veya kişisel belgeleri okumaz.
 
 ## 1. Gerekenler
 
@@ -146,7 +149,21 @@ Kamu ilanı incelemesi üç kategori üretir:
 
 YDS puanının KPSS ile birlikte sıralama hesabında kullanılması tek başına zorunlu bir YDS taban şartı değildir; ilan puanı olmayan aday için 0 puan verileceğini söylüyorsa bu durum uygunluk engeli sayılmaz. Adayın yaşı, deneyimi veya zorunlu sertifikaları gibi gerçekten zorunlu olup profilde bulunmayan bilgiler potansiyel sınıfında kalır. Güvenlik soruşturması ve arşiv araştırması kurum süreçleri olduğundan adayın eksik şartı sayılmaz.
 
-Bu sınıflandırma başvuru/atama garantisi vermez. Özellikle pozisyon bazında ayrıntılı nitelik, deneyim ve belge şartlarını resmî ilanın okunabilir HTML metni ve başvuru ekranından doğrula. İlan eşitlemesi PDF belgelerini indirmez veya okumaz.
+Bu sınıflandırma başvuru/atama garantisi vermez. Özellikle pozisyon bazında ayrıntılı nitelik, deneyim ve belge şartlarını resmî ilanın ve eklerinin bağlantılarından doğrula.
+
+## Resmî ilan eklerini inceleme
+
+Kariyer Kapısı, SBB, İŞKUR ve Yerel Yönetimler ilanlarının resmî detay bağlantılarındaki PDF, DOCX ve HTML ekleri `backend.document_sync` ile taranır. Yalnızca gerçek ilan detay sayfaları taranır; genel bilgi ve rehber sayfaları ek olarak değerlendirilmez. PDF tabloları satır ve sütun geometrisi kullanılarak ayrıştırılır; her kadro satırı kendi kontenjan, KPSS türü/taban puanı, atanma yeri ve yazılı sınava çağrı bilgisiyle saklanır. Sınava çağrı sıralaması uygunluk sınıflandırmasından ayrı gösterilir. Kaynağın kayıtlarında ilana özgü detay bağlantısı yoksa belge taraması açıkça kullanılamıyor olarak raporlanır; ana liste bağlantısı ilan eki gibi kullanılmaz.
+
+İlan kaynaklarını senkronize etmek ek belgeleri de kontrol eder. Yalnızca ekleri tekrar taramak için:
+
+```powershell
+python -m backend.document_sync
+```
+
+Tek bir ilan için `python -m backend.document_sync --job-id 5` kullanılabilir. Belge hash'i ve varsa ETag/Last-Modified bilgisi saklanır; sunucu değişiklik olmadığını doğrularsa belge gövdesi yeniden indirilmez. Geçici erişim veya ayrıştırma hataları önceki başarılı metni ve pozisyon satırlarını silmez. Tarama/okuma durumu ve resmî belge bağlantıları uygunluk analizindeki “İlan ve ek belge incelemesi” bölümünde görünür. Desteklenmeyen veya okunamayan belgeler incelenmiş gibi işaretlenmez.
+
+Render demo modunda veri değiştiren POST istekleri kapalıdır. Bu nedenle belge taramasını yerel ortamda çalıştır; yayında daha önce saklanan ek-belge verileri varsa GET analizlerinde görüntülenir.
 
 ## 6. Veri ve gizlilik
 

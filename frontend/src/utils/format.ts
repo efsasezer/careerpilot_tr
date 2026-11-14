@@ -1,5 +1,5 @@
-export function formatDate(value: string | null | undefined) {
-  if (!value) return "Belirtilmemiş";
+export function formatDate(value: string | null | undefined, missingLabel = "Belirtilmemiş") {
+  if (!value) return missingLabel;
   const date = new Date(`${value.slice(0, 10)}T00:00:00`);
   return Number.isNaN(date.getTime())
     ? value
