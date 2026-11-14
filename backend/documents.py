@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as html_lib
 from html.parser import HTMLParser
 from io import BytesIO
 import ipaddress
@@ -69,17 +70,32 @@ def fetch_url(
     last_modified: str | None = None,
     max_bytes: int = MAX_DOCUMENT_BYTES,
 ) -> dict:
-    headers = {"User-Agent": "CareerPilotTR/1.0 (official public recruitment attachments)"}
+    current_url = html_lib.unescape(url).strip()
+    is_iskur = "iskur.gov.tr" in current_url.lower()
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            if is_iskur
+            else "CareerPilotTR/1.0 (official public recruitment attachments)"
+        )
+    }
+    if is_iskur:
+        headers["Referer"] = "https://www.iskur.gov.tr/ilanlar/kamu-memur-alim-ilanlari/"
+        headers["Accept"] = "text/html,application/xhtml+xml,application/xml,application/pdf;q=0.9,*/*;q=0.8"
+
     if etag:
         headers["If-None-Match"] = etag
     if last_modified:
         headers["If-Modified-Since"] = last_modified
 
-    current_url = url
+    session = requests.Session() if is_iskur else None
+
     for _ in range(6):
         _validate_official_url(current_url)
         try:
-            response = requests.get(
+            client = session or requests
+            response = client.get(
                 current_url,
                 headers=headers,
                 timeout=(8, 35),
@@ -133,14 +149,21 @@ def fetch_url(
             response.close()
 
         _validate_official_url(final_url)
+        body = b"".join(chunks)
+        if body.startswith(b"<html>") and any(
+            marker in body.lower()
+            for marker in (b"request rejected", b"istek reddedildi", b"access denied")
+        ):
+            raise DocumentFetchError("Resmî belge sunucusu erişim kontrolü isteği reddetti.")
         return {
             "not_modified": False,
             "url": final_url,
             "etag": etag_value,
             "last_modified": modified_value,
             "content_type": content_type,
-            "body": b"".join(chunks),
+            "body": body,
         }
+
 
     raise DocumentFetchError("Belge bağlantısı çok sayıda yönlendirme yaptı.")
 
