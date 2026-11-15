@@ -609,3 +609,49 @@ class SyncManager:
 
 
 sync_manager = SyncManager()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Komut satırından tek seferlik tarama: `python -m backend.sync [--no-notify] [--summary dosya]`."""
+    import argparse
+
+    from .database import Base, SessionLocal, engine
+    from .migrate import migrate
+
+    parser = argparse.ArgumentParser(description="Bütün kaynakları tarar ve bildirimleri üretir.")
+    parser.add_argument("--no-notify", action="store_true", help="E-posta/Telegram gönderme (bildirim kayıtları yine oluşur).")
+    parser.add_argument("--summary", help="Markdown özetinin yazılacağı dosya (ör. GitHub Actions özeti).")
+    args = parser.parse_args(argv)
+
+    if args.no_notify:
+        import os
+
+        os.environ["CAREERPILOT_NOTIFY_DISABLED"] = "true"
+    migrate()
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        cleanup_legacy_rows(db)
+        report = run_sync(db)
+
+    lines = ["| Kaynak | Durum | Bulunan | Yeni | Güncellenen | Okunamayan | Not |", "|---|---|---|---|---|---|---|"]
+    for item in report["results"].values():
+        note = (item.get("error") or item.get("empty_warning") or "").replace("|", "/")[:160]
+        lines.append(
+            f"| {item['source']} | {item['status']} | {item['found']} | {item['imported']} | {item['updated']} "
+            f"| {item['detail_failed']} | {note} |"
+        )
+    notifications = report.get("notifications") or {}
+    lines.append("")
+    lines.append(f"Yeni bildirim: {notifications.get('created', 0)} · Kanallar: {notifications.get('channels') or 'gönderim yok'}")
+    summary = "\n".join(lines)
+    print(summary)
+    if args.summary:
+        with open(args.summary, "a", encoding="utf-8") as handle:
+            handle.write("## CareerPilot taraması\n\n" + summary + "\n")
+    # Kaynakların tamamı hata verdiyse iş başarısız sayılır; kısmi sonuçlar başarılıdır.
+    statuses = [item["status"] for item in report["results"].values()]
+    return 1 if statuses and all(status == "error" for status in statuses) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

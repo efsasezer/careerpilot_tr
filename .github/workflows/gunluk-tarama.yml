@@ -1,0 +1,90 @@
+name: Günlük ilan taraması
+
+# Resmî kaynakları tarar, careerpilot.db dosyasını günceller ve yeni eşleşmeler için
+# e-posta/Telegram bildirimi gönderir. Kurulum: README_TR.md › "Otomatik günlük tarama".
+
+on:
+  schedule:
+    # Türkiye saatiyle 08:30 ve 17:30 (UTC+3)
+    - cron: "30 5 * * *"
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+    inputs:
+      deneme:
+        description: "Deneme çalıştırması: veritabanını kaydetme, bildirim gönderme"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - ".github/workflows/gunluk-tarama.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gunluk-tarama
+  cancel-in-progress: false
+
+jobs:
+  tarama:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Pull request'te ve elle "deneme" seçildiğinde hiçbir şey kaydedilmez ve gönderilmez.
+      DENEME: ${{ github.event_name == 'pull_request' || inputs.deneme == true }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Bağımlılıkları kur
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Kaynakları tara
+        env:
+          CAREERPILOT_SOURCE_REQUEST_DELAY_SECONDS: "1"
+          CAREERPILOT_APP_URL: ${{ vars.CAREERPILOT_APP_URL || 'https://careerpilot-tr-web.onrender.com' }}
+          CAREERPILOT_SMTP_HOST: ${{ secrets.CAREERPILOT_SMTP_HOST }}
+          CAREERPILOT_SMTP_PORT: ${{ secrets.CAREERPILOT_SMTP_PORT }}
+          CAREERPILOT_SMTP_USER: ${{ secrets.CAREERPILOT_SMTP_USER }}
+          CAREERPILOT_SMTP_PASSWORD: ${{ secrets.CAREERPILOT_SMTP_PASSWORD }}
+          CAREERPILOT_SMTP_FROM: ${{ secrets.CAREERPILOT_SMTP_FROM }}
+          CAREERPILOT_TELEGRAM_BOT_TOKEN: ${{ secrets.CAREERPILOT_TELEGRAM_BOT_TOKEN }}
+          CAREERPILOT_NOTIFY_EMAIL_TO: ${{ secrets.CAREERPILOT_NOTIFY_EMAIL_TO }}
+          CAREERPILOT_NOTIFY_TELEGRAM_CHAT_ID: ${{ secrets.CAREERPILOT_NOTIFY_TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "$DENEME" = "true" ]; then
+            python -m backend.sync --no-notify --summary "$GITHUB_STEP_SUMMARY"
+          else
+            python -m backend.sync --summary "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Veritabanını kaydet
+        if: env.DENEME != 'true'
+        run: |
+          if git diff --quiet -- careerpilot.db; then
+            echo "Veritabanında değişiklik yok."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add careerpilot.db
+          git commit -m "Günlük tarama: ilan veritabanı güncellendi"
+          git push
+
+      - name: Render'da API'yi yeniden yayınla
+        if: env.DENEME != 'true'
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL tanımlı değil; yayın adımı atlandı."
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 60 -X POST "$RENDER_DEPLOY_HOOK_URL" > /dev/null
+          echo "Render yayını tetiklendi."

@@ -454,3 +454,51 @@ def test_osym_source_picks_only_placement_preference_announcements(monkeypatch):
         # Tercih dönemi kapanınca duyurunun kalkması uyarı sayılmaz.
         pages["https://www.osym.gov.tr/"] = filler
         assert main.sync_all_sources(db)["results"]["osym"]["status"] == "ok"
+
+
+def test_scheduled_runs_take_recipients_from_environment_and_dry_runs_send_nothing(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notifications, "send_telegram", lambda chat_id, text: sent.append(chat_id))
+    with _database() as db:
+        db.add(CandidateProfile(id=1, degree="Lisans", department="İktisat", kpss_scores='{"P48": 85}'))
+        db.add(_job(application_deadline=date.today() + timedelta(days=20)))
+        db.commit()
+
+        monkeypatch.setenv("CAREERPILOT_NOTIFY_TELEGRAM_CHAT_ID", "12345")
+        settings = notifications.load_settings(db)
+        assert settings.telegram_enabled and settings.telegram_chat_id == "12345" and not settings.email_enabled
+
+        monkeypatch.setenv("CAREERPILOT_NOTIFY_DISABLED", "true")
+        dry = notifications.process_notifications(db)
+        assert dry["created"] == 1 and sent == []
+        assert db.scalar(select(Notification)).delivered_at is None  # deneme: gerçek çalıştırmada gönderilir
+
+        monkeypatch.delenv("CAREERPILOT_NOTIFY_DISABLED")
+        real = notifications.process_notifications(db)
+        assert real["channels"] == {"telegram": "ok"} and sent == ["12345"]
+        assert db.scalar(select(Notification)).delivered_at is not None
+
+
+def test_command_line_sync_writes_summary_and_fails_only_when_every_source_fails(monkeypatch, tmp_path):
+    from backend import sync
+
+    class Broken:
+        source_name = "SBB Kamu İlanları"
+        pages_checked = 0
+
+        def fetch_listings(self):
+            raise RuntimeError("bağlantı reddedildi")
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'cli.db'}")
+    Base.metadata.create_all(engine)
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setattr("backend.database.SessionLocal", sessionmaker(bind=engine))
+    monkeypatch.setattr("backend.database.engine", engine)
+    monkeypatch.setattr(sync, "get_source_registry", lambda: {"sbb": Broken()})
+    monkeypatch.setattr("backend.migrate.migrate", lambda: None)
+    summary = tmp_path / "ozet.md"
+
+    assert sync.main(["--no-notify", "--summary", str(summary)]) == 1
+    text = summary.read_text(encoding="utf-8")
+    assert "SBB Kamu İlanları" in text and "bağlantı reddedildi" in text
