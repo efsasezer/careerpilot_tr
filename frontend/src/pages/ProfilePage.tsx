@@ -1,169 +1,142 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Plus, Save, Trash2 } from "lucide-react";
 import { PageHeader } from "../components/shared/PageHeader";
 import { QueryState } from "../components/shared/QueryState";
 import { useHealth, useProfile, useUpdateProfile } from "../services/api/hooks";
 import type { Profile, ProfileUpdate } from "../types/api";
-import { formatBoolean, formatTimestamp } from "../utils/format";
+import { formatTimestamp } from "../utils/format";
+
+const DEGREES = ["Ortaöğretim (Lise)", "Ön Lisans", "Lisans", "Yüksek Lisans", "Doktora"];
+const COMMON_SCORE_TYPES = ["P3", "P93", "P94", "P1", "P2", "P10", "P121"];
+
+interface ScoreRow { type: string; score: string }
+
+function toDraft(profile: Profile): ProfileUpdate {
+  const { id: _id, updated_at: _updatedAt, ...fields } = profile;
+  return fields;
+}
 
 export default function ProfilePage() {
   const query = useProfile();
   const health = useHealth();
-  const updateProfile = useUpdateProfile();
-  const profile = query.data;
-  const [editing, setEditing] = useState(false);
+  const update = useUpdateProfile();
+  const readOnly = health.data?.read_only ?? true;
   const [draft, setDraft] = useState<ProfileUpdate | null>(null);
-  const [saved, setSaved] = useState(false);
-  const readOnly = health.data?.demo_mode !== false;
+  const [scores, setScores] = useState<ScoreRow[]>([]);
+  const [message, setMessage] = useState("");
+  const [scoreError, setScoreError] = useState("");
 
-  function startEditing() {
-    if (!profile) return;
-    setDraft(toProfileUpdate(profile));
-    setSaved(false);
-    updateProfile.reset();
-    setEditing(true);
+  useEffect(() => {
+    if (!query.data) return;
+    setDraft(toDraft(query.data));
+    const rows = Object.entries(query.data.kpss_scores).map(([type, score]) => ({ type, score: String(score) }));
+    setScores(rows.length ? rows : [{ type: "P3", score: "" }]);
+  }, [query.data]);
+
+  function set<K extends keyof ProfileUpdate>(key: K, value: ProfileUpdate[K]) {
+    setMessage("");
+    setDraft((current) => (current ? { ...current, [key]: value } : current));
   }
 
-  function cancelEditing() {
-    setEditing(false);
-    setDraft(null);
-    updateProfile.reset();
-  }
-
-  function updateField<K extends keyof ProfileUpdate>(
-    key: K,
-    value: ProfileUpdate[K],
-  ) {
-    setDraft((current) => current ? { ...current, [key]: value } : current);
-  }
-
-  function save(event: FormEvent<HTMLFormElement>) {
+  function save(event: FormEvent) {
     event.preventDefault();
     if (!draft) return;
-    updateProfile.mutate(draft, {
-      onSuccess: () => {
-        setEditing(false);
-        setDraft(null);
-        setSaved(true);
-      },
-    });
+    const kpss: Record<string, number> = {};
+    for (const row of scores) {
+      const type = row.type.trim().toUpperCase().replace(/^KPSS\s*-?/, "");
+      if (!type && !row.score.trim()) continue;
+      const score = Number(row.score.replace(",", "."));
+      if (!/^P\d{1,3}$/.test(type) || !row.score.trim() || !Number.isFinite(score) || score < 0 || score > 100) {
+        setScoreError("Puan türü P3, P93 gibi yazılmalı; puan 0 ile 100 arasında olmalı.");
+        return;
+      }
+      kpss[type] = score;
+    }
+    setScoreError("");
+    update.mutate({ ...draft, kpss_scores: kpss }, { onSuccess: () => setMessage("Profil kaydedildi. İlanlar yeni bilgilere göre yeniden değerlendirildi.") });
   }
 
   return (
-    <QueryState isLoading={query.isLoading} error={query.error}>
-      {profile && <>
-        <PageHeader
-          eyebrow="KİŞİSEL ALAN"
-          title="Aday profili"
-          description="Profil bilgilerini güncelle; kaydedince uygunluk analizleri yenilenir."
-          action={!editing && (
-            <button
-              className={`button ${readOnly ? "button-disabled" : "button-outline"}`}
-              onClick={startEditing}
-              disabled={readOnly}
-            >
-              {readOnly ? "Salt okunur mod" : "Profili düzenle"}
-            </button>
-          )}
-        />
-        <section className="profile-hero panel">
-          <div className="avatar-mark">{profile.department.slice(0, 1) || "A"}</div>
-          <div>
-            <span className="eyebrow">ADAY PROFİLİ</span>
-            <h2>{profile.department || "Bölüm belirtilmemiş"}</h2>
-            <p>{profile.degree} · {profile.university || "Üniversite belirtilmemiş"}</p>
-          </div>
-          <div className="score-highlight">
-            <small>KPSS {profile.kpss_score_type}</small>
-            <strong>{profile.kpss_p3?.toFixed(2) ?? "—"}</strong>
-          </div>
-        </section>
+    <QueryState isLoading={query.isLoading || !draft} error={query.error}>
+      {draft && (
+        <form onSubmit={save} className="profile-form">
+          <PageHeader
+            title="Profilim"
+            description={`İlanlar bu bilgilere göre değerlendirilir. Boş bıraktığınız alanlar “doğrulanmalı” sonucu üretir. Son güncelleme: ${formatTimestamp(query.data?.updated_at, "henüz yok")}.`}
+            action={<button type="submit" className="button button-primary" disabled={readOnly || update.isPending}><Save size={16} /> {update.isPending ? "Kaydediliyor…" : "Kaydet"}</button>}
+          />
+          {readOnly && <p className="notice notice-info">Salt okunur yayında profil değiştirilemez.</p>}
+          {message && <p className="notice notice-ok" role="status">{message}</p>}
+          {update.error && <p className="notice notice-bad" role="alert">Kaydedilemedi: {update.error.message}</p>}
 
-        {editing && draft ? (
-          <form className="profile-sections" onSubmit={save}>
-            <ProfileSection title="Eğitim ve sınav">
-              <ProfileInput label="Eğitim seviyesi" value={draft.degree} onChange={(value) => updateField("degree", value)} />
-              <ProfileInput label="Bölüm" value={draft.department} onChange={(value) => updateField("department", value)} />
-              <ProfileInput label="Üniversite" value={draft.university} onChange={(value) => updateField("university", value)} />
-              <ProfileInput label="KPSS puan türü" value={draft.kpss_score_type} onChange={(value) => updateField("kpss_score_type", value)} />
-              <ProfileInput label="KPSS P3" type="number" min={0} max={100} step={0.01} value={draft.kpss_p3} onChange={(value) => updateField("kpss_p3", numberOrNull(value))} />
-              <ProfileInput label="YDS / dil puanı" type="number" min={0} max={100} step={0.01} value={draft.yds_score} onChange={(value) => updateField("yds_score", numberOrNull(value))} />
-            </ProfileSection>
-            <ProfileSection title="Tercihler ve deneyim">
-              <ProfileInput label="Tercih edilen konumlar" value={draft.preferred_locations} onChange={(value) => updateField("preferred_locations", value)} />
-              <BooleanInput label="Vardiyalı çalışma" value={draft.accepts_shifts} onChange={(value) => updateField("accepts_shifts", value)} />
-              <ProfileInput label="Yaş" type="number" min={0} step={1} value={draft.age} onChange={(value) => updateField("age", numberOrNull(value))} />
-              <ProfileInput label="Mesleki deneyim (yıl)" type="number" min={0} step={0.5} value={draft.experience_years} onChange={(value) => updateField("experience_years", numberOrNull(value))} />
-              <BooleanInput label="Sürücü belgesi" value={draft.driver_license} onChange={(value) => updateField("driver_license", value)} />
-              <BooleanInput label="Staj deneyimi var" value={draft.has_internship} onChange={(value) => updateField("has_internship", value)} />
-              <ProfileTextarea label="Staj deneyimi açıklaması" value={draft.internship_description} onChange={(value) => updateField("internship_description", value)} />
-            </ProfileSection>
-            <ProfileSection title="Beceriler ve belgeler">
-              <ProfileTextarea label="Teknik beceriler" value={draft.skills} onChange={(value) => updateField("skills", value)} />
-              <ProfileTextarea label="Programlama dili kanıtları" value={draft.programming_language_evidence} onChange={(value) => updateField("programming_language_evidence", value)} />
-              <ProfileTextarea label="Sertifikalar" value={draft.certificates} onChange={(value) => updateField("certificates", value)} />
-            </ProfileSection>
-            <ProfileSection title="Notlar">
-              <ProfileTextarea label="Kişisel notlar" value={draft.notes} onChange={(value) => updateField("notes", value)} />
-            </ProfileSection>
-            {updateProfile.error && (
-              <p className="profile-save-error" role="alert">
-                Kaydedilemedi: {updateProfile.error.message}
-              </p>
-            )}
-            <div className="profile-edit-actions">
-              <button type="button" className="button button-outline" onClick={cancelEditing}>
-                İptal
-              </button>
-              <button type="submit" className="button button-primary" disabled={updateProfile.isPending}>
-                {updateProfile.isPending ? "Kaydediliyor…" : "Değişiklikleri kaydet"}
-              </button>
-            </div>
-          </form>
-        ) : (
-          <>
-            {readOnly && (
-              <p className="readonly-hint">
-                Profil düzenlemek için backend&apos;de salt okunur demo modunu kapatın.
-              </p>
-            )}
-            <div className="profile-sections">
-              <ProfileSection title="Eğitim ve sınav">
-                <Field label="Eğitim seviyesi" value={profile.degree} />
-                <Field label="Bölüm" value={profile.department} />
-                <Field label="Üniversite" value={profile.university} />
-                <Field label="KPSS puan türü" value={profile.kpss_score_type} />
-                <Field label="KPSS P3" value={profile.kpss_p3?.toFixed(2)} />
-                <Field label="YDS / dil puanı" value={profile.yds_score} />
-              </ProfileSection>
-              <ProfileSection title="Tercihler ve deneyim">
-                <Field label="Tercih edilen konumlar" value={profile.preferred_locations} />
-                <Field label="Vardiyalı çalışma" value={formatBoolean(profile.accepts_shifts)} />
-                <Field label="Yaş" value={profile.age} />
-                <Field label="Mesleki deneyim (yıl)" value={profile.experience_years} />
-                <Field label="Sürücü belgesi" value={formatBoolean(profile.driver_license)} />
-                <Field label="Staj deneyimi" value={profile.internship_description} />
-              </ProfileSection>
-              <ProfileSection title="Beceriler ve belgeler">
-                <Field label="Teknik beceriler" value={profile.skills} />
-                <Field label="Programlama dili kanıtları" value={profile.programming_language_evidence} />
-                <Field label="Sertifikalar" value={profile.certificates} />
-              </ProfileSection>
-              <ProfileSection title="Notlar ve güncelleme">
-                <Field label="Kişisel notlar" value={profile.notes} />
-                <Field label="Son güncelleme" value={formatTimestamp(profile.updated_at)} />
-              </ProfileSection>
-            </div>
-            {saved && <p className="profile-save-success" role="status">Profil güncellendi.</p>}
-          </>
-        )}
-      </>}
+          <fieldset disabled={readOnly} className="form-sections">
+            <Section title="Öğrenim" help="Bölüm adını diplomanızdaki gibi yazın. İlanlarda farklı adla geçebilecek eşdeğer bölümleri ayrıca ekleyebilirsiniz.">
+              <Field label="Öğrenim düzeyi">
+                <select value={draft.degree} onChange={(event) => set("degree", event.target.value)}>
+                  <option value="">Seçin</option>
+                  {[...new Set([...DEGREES, draft.degree].filter(Boolean))].map((degree) => <option key={degree}>{degree}</option>)}
+                </select>
+              </Field>
+              <Field label="Bölüm / program"><input value={draft.department} onChange={(event) => set("department", event.target.value)} placeholder="Örn. İktisat" /></Field>
+              <Field label="Fakülte / yüksekokul"><input value={draft.faculty} onChange={(event) => set("faculty", event.target.value)} placeholder="Örn. İktisadi ve İdari Bilimler Fakültesi" /></Field>
+              <Field label="Üniversite"><input value={draft.university} onChange={(event) => set("university", event.target.value)} /></Field>
+              <Field label="Eşdeğer sayılan bölümler" wide help="Virgülle ayırın. Örn. Yazılım Mühendisliği, Bilgisayar Bilimleri Mühendisliği">
+                <input value={draft.department_aliases} onChange={(event) => set("department_aliases", event.target.value)} />
+              </Field>
+            </Section>
+
+            <Section title="KPSS puanları" help="Sahip olduğunuz bütün puan türlerini girin; ilan hangi türü istiyorsa o puanınız kullanılır.">
+              <div className="score-rows">
+                {scores.map((row, index) => (
+                  <div className="score-row" key={index}>
+                    <label><span>Puan türü</span>
+                      <input list="score-types" value={row.type} onChange={(event) => setScores(scores.map((item, i) => (i === index ? { ...item, type: event.target.value } : item)))} placeholder="P3" />
+                    </label>
+                    <label><span>Puan</span>
+                      <input inputMode="decimal" value={row.score} onChange={(event) => setScores(scores.map((item, i) => (i === index ? { ...item, score: event.target.value } : item)))} placeholder="0–100" />
+                    </label>
+                    <button type="button" className="icon-button" aria-label={`${row.type || "Puan"} satırını sil`} onClick={() => setScores(scores.filter((_, i) => i !== index))}><Trash2 size={17} /></button>
+                  </div>
+                ))}
+                <datalist id="score-types">{COMMON_SCORE_TYPES.map((type) => <option key={type} value={type} />)}</datalist>
+                {scoreError && <p className="field-error" role="alert">{scoreError}</p>}
+                <button type="button" className="button" onClick={() => setScores([...scores, { type: "", score: "" }])}><Plus size={16} /> Puan türü ekle</button>
+              </div>
+            </Section>
+
+            <Section title="Kişisel bilgiler" help="Yaş, cinsiyet ve ehliyet gibi bilgiler bazı kadroların özel şartlarında aranır.">
+              <Field label="Yaş"><input type="number" min={15} max={80} value={draft.age ?? ""} onChange={(event) => set("age", numberOrNull(event.target.value))} /></Field>
+              <Field label="Cinsiyet">
+                <select value={draft.gender} onChange={(event) => set("gender", event.target.value)}>
+                  <option value="">Belirtmek istemiyorum</option><option>Kadın</option><option>Erkek</option>
+                </select>
+              </Field>
+              <Field label="Sürücü belgesi"><TriState value={draft.driver_license} onChange={(value) => set("driver_license", value)} yes="Var" no="Yok" /></Field>
+              <Field label="Vardiyalı çalışma"><TriState value={draft.accepts_shifts} onChange={(value) => set("accepts_shifts", value)} yes="Kabul ediyorum" no="Kabul etmiyorum" /></Field>
+              <Field label="Özel statü" help="Yalnızca bu statüdeki adaylara açık ilanlar için.">
+                <select value={draft.special_status} onChange={(event) => set("special_status", event.target.value)}>
+                  <option value="">Yok</option><option value="engelli">Engelli (EKPSS)</option><option value="eski hükümlü">Eski hükümlü / terörle mücadelede yaralanan</option>
+                </select>
+              </Field>
+              <Field label="Tercih ettiğim şehirler" help="Virgülle ayırın veya “Türkiye geneli” yazın.">
+                <input value={draft.preferred_locations} onChange={(event) => set("preferred_locations", event.target.value)} />
+              </Field>
+            </Section>
+
+            <Section title="Dil, deneyim ve belgeler">
+              <Field label="YDS / e-YDS puanı"><input type="number" min={0} max={100} step="0.01" value={draft.yds_score ?? ""} onChange={(event) => set("yds_score", numberOrNull(event.target.value))} /></Field>
+              <Field label="Mesleki deneyim (yıl)"><input type="number" min={0} max={60} step="0.5" value={draft.experience_years ?? ""} onChange={(event) => set("experience_years", numberOrNull(event.target.value))} /></Field>
+              <Field label="Sertifikalar" wide help="Virgülle ayırın."><textarea rows={2} value={draft.certificates} onChange={(event) => set("certificates", event.target.value)} /></Field>
+              <Field label="Bildiğim programlama dilleri (belgeleyebildiklerim)" wide help="Bilişim personeli ilanlarında aranır; ilgili değilse boş bırakın.">
+                <textarea rows={2} value={draft.programming_language_evidence} onChange={(event) => set("programming_language_evidence", event.target.value)} />
+              </Field>
+              <Field label="Notlar" wide><textarea rows={3} value={draft.notes} onChange={(event) => set("notes", event.target.value)} /></Field>
+            </Section>
+          </fieldset>
+        </form>
+      )}
     </QueryState>
   );
-}
-
-function toProfileUpdate(profile: Profile): ProfileUpdate {
-  const { id: _id, updated_at: _updatedAt, ...fields } = profile;
-  return fields;
 }
 
 function numberOrNull(value: string): number | null {
@@ -172,93 +145,29 @@ function numberOrNull(value: string): number | null {
   return Number.isFinite(number) ? number : null;
 }
 
-function ProfileSection({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="panel profile-section"><h2>{title}</h2><div className="field-grid">{children}</div></section>;
+function Section({ title, help, children }: { title: string; help?: string; children: ReactNode }) {
+  return (
+    <section className="form-section">
+      <div className="form-section-head"><h2>{title}</h2>{help && <p>{help}</p>}</div>
+      <div className="form-grid">{children}</div>
+    </section>
+  );
 }
 
-function ProfileInput({
-  label,
-  value,
-  onChange,
-  type = "text",
-  min,
-  max,
-  step,
-}: {
-  label: string;
-  value: string | number | null;
-  onChange: (value: string) => void;
-  type?: "text" | "number";
-  min?: number;
-  max?: number;
-  step?: number;
-}) {
+function Field({ label, help, wide, children }: { label: string; help?: string; wide?: boolean; children: ReactNode }) {
   return (
-    <label className="field-label profile-edit-field">
-      {label}
-      <input
-        aria-label={label}
-        type={type}
-        min={min}
-        max={max}
-        step={step}
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value)}
-      />
+    <label className={`field ${wide ? "field-wide" : ""}`}>
+      <span>{label}</span>
+      {children}
+      {help && <small>{help}</small>}
     </label>
   );
 }
 
-function BooleanInput({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean | null;
-  onChange: (value: boolean | null) => void;
-}) {
+function TriState({ value, onChange, yes, no }: { value: boolean | null; onChange: (value: boolean | null) => void; yes: string; no: string }) {
   return (
-    <label className="field-label profile-edit-field">
-      {label}
-      <select
-        aria-label={label}
-        value={value === null ? "" : String(value)}
-        onChange={(event) => onChange(
-          event.target.value === "" ? null : event.target.value === "true",
-        )}
-      >
-        <option value="">Belirtilmedi</option>
-        <option value="true">Evet</option>
-        <option value="false">Hayır</option>
-      </select>
-    </label>
+    <select value={value === null ? "" : String(value)} onChange={(event) => onChange(event.target.value === "" ? null : event.target.value === "true")}>
+      <option value="">Belirtilmedi</option><option value="true">{yes}</option><option value="false">{no}</option>
+    </select>
   );
-}
-
-function ProfileTextarea({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label className="field-label profile-edit-field">
-      {label}
-      <textarea
-        aria-label={label}
-        rows={3}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </label>
-  );
-}
-
-function Field({ label, value }: { label: string; value: unknown }) {
-  const display = value === null || value === undefined || value === "" ? "Belirtilmemiş" : String(value);
-  return <div className="profile-field"><span>{label}</span><strong>{display}</strong></div>;
 }

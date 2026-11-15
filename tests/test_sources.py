@@ -17,7 +17,7 @@ def test_sbb_parser_finds_distinct_official_detail_links(monkeypatch):
     monkeypatch.setattr(
         sbb,
         "fetch_html",
-        lambda _name, _url: (
+        lambda _name, _url, **_kwargs: (
             "https://kamuilan.sbb.gov.tr/",
             """
             <a href="ilanDetay.aspx?kod=notice-1">Bilgisayar Mühendisi alımı</a>
@@ -39,7 +39,7 @@ def test_sbb_parser_extracts_structured_fields_and_deduplicates_list_items(monke
     monkeypatch.setattr(
         sbb,
         "fetch_html",
-        lambda _name, _url: (
+        lambda _name, _url, **_kwargs: (
             "https://kamuilan.sbb.gov.tr/",
             """
             <a href="ilanDetay.aspx?kod=notice-1">
@@ -75,24 +75,53 @@ def test_sbb_parser_extracts_structured_fields_and_deduplicates_list_items(monke
     assert "ilanDetay.aspx?kod=" in listing["detail_url"]
 
 
-def test_sbb_parser_does_not_invent_fields_when_detail_is_soft_404(monkeypatch):
-    monkeypatch.setattr(
-        sbb,
-        "fetch_html",
-        lambda _name, url: (
-            url,
-            "<html><body><h1>404</h1><p>Aradığınız sayfa bulunamadı</p></body></html>",
-        ),
-    )
+def test_sbb_detail_soft_404_is_reported_as_failure(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Type": "text/html"}
+        content = "<html><body><h1>404</h1><p>Aradığınız sayfa bulunamadı</p></body></html>".encode("utf-8")
+        text = content.decode("utf-8")
+        encoding = apparent_encoding = "utf-8"
+
+    source = sbb.SBBSource()
+    seen = {}
+
+    def fake_get(url, **kwargs):
+        seen.update(kwargs["headers"])
+        return FakeResponse()
+
+    monkeypatch.setattr(source._session, "get", fake_get)
 
     try:
-        sbb.SBBSource().fetch_detail(
-            "https://kamuilan.sbb.gov.tr/ilanDetay.aspx?kod=missing"
-        )
+        source.fetch_detail("https://kamuilan.sbb.gov.tr/ilanDetay.aspx?kod=missing")
     except RuntimeError as error:
-        assert "soft-404" in str(error)
+        assert "açılamadı" in str(error)
     else:
         raise AssertionError("A soft-404 must not be treated as an accessible detail.")
+    # Detay, liste sayfası referansıyla aynı oturumdan istenir.
+    assert seen["Referer"] == "https://kamuilan.sbb.gov.tr/"
+
+
+def test_sbb_detail_pdf_is_parsed_as_official_document(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Type": "application/pdf"}
+        content = b"%PDF-1.5 fake"
+
+    source = sbb.SBBSource()
+    monkeypatch.setattr(source._session, "get", lambda url, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        "backend.documents.parse_document",
+        lambda url, body, content_type: {
+            "text": "Resmî ilan metni " * 10, "positions": [], "shared_requirements": "", "links": [], "partially_read": False,
+        },
+    )
+
+    detail = source.fetch_detail("https://kamuilan.sbb.gov.tr/ilanDetay.aspx?kod=abc")
+
+    assert detail["source_text"].startswith("Resmî ilan metni")
+    assert detail["document"]["url"] == "https://kamuilan.sbb.gov.tr/"
+    assert len(detail["document"]["body_hash"]) == 64
 
 
 def test_sbb_quota_parser_keeps_compound_counts_and_project_based_quota():
@@ -250,26 +279,35 @@ def test_yerel_yonetimler_traverses_all_pager_pages(monkeypatch):
         "https://yerelyonetimler.csb.gov.tr/duyurular": (
             "https://yerelyonetimler.csb.gov.tr/duyurular",
             """
-            <a href="/ankara-belediyesi-memur-alimi-duyuru-100">Ankara Belediyesi memur alımı</a>
+            <a href="/ankara-belediyesi-memur-alimi-duyuru-100">05 Kasım 2026 Perşembe ANKARA İLİ ÖRNEK BELEDİYE BAŞKANLIĞINA İLK DEFA ATANMAK ÜZERE MEMUR ALIM İLANI...</a>
+            <a href="/personel-gorusleri-duyuru-101">Personel Görüşleri</a>
+            <a href="/iptal-duyuru-102">04 Kasım 2026 Çarşamba MUŞ İLİ ELMAKAYA BELEDİYESİNİN MEMUR ALIMI İPTAL İLANI</a>
             <a href="/duyurular/1">1</a><a href="/duyurular/2">2</a>
             """,
         ),
         "https://yerelyonetimler.csb.gov.tr/duyurular/2": (
             "https://yerelyonetimler.csb.gov.tr/duyurular/2",
             """
-            <a href="/izmir-belediyesi-memur-alimi-duyuru-200">İzmir Belediyesi memur alımı</a>
+            <a href="/izmir-belediyesi-memur-alimi-duyuru-200">İZMİR BÜYÜKŞEHİR BELEDİYE BAŞKANLIĞINA İLK DEFA ATANMAK ÜZERE ZABITA MEMURU ALIMI İLANI</a>
             <a href="/duyurular/1">1</a><a href="/duyurular/2">2</a>
             """,
         ),
     }
-    monkeypatch.setattr(yerel_yonetimler, "fetch_html", lambda _name, url: pages[url])
+    monkeypatch.setattr(yerel_yonetimler, "fetch_html", lambda _name, url, **_kwargs: pages[url])
 
     source = yerel_yonetimler.YerelYonetimlerSource()
     listings = source.fetch_listings()
 
     assert source.pages_checked == 2
-    assert [item["external_id"] for item in listings] == ["100", "200"]
-    assert all(item["application_end_date"] is None for item in listings)
+    # Rehber/görüş sayfaları ilan sayılmaz; iptal duyurusu ayrı işaretlenir.
+    assert [item["external_id"] for item in listings] == ["100", "102", "200"]
+    first, cancelled, last = listings
+    assert first["institution"] == "Örnek Belediye Başkanlığı"
+    assert first["city"] == "Ankara"
+    assert first["announcement_date"] == date(2026, 11, 5)
+    assert first["title"].startswith("ANKARA İLİ")
+    assert cancelled["is_cancellation"] is True
+    assert last["institution"] == "İzmir Büyükşehir Belediye Başkanlığı"
 
 
 def test_iskur_access_rejection_is_not_reported_as_empty_success(monkeypatch):
@@ -287,44 +325,34 @@ def test_iskur_access_rejection_is_not_reported_as_empty_success(monkeypatch):
         raise AssertionError("Access-rejected source must not look like a successful empty scan.")
 
 
-def test_turkseker_positions_come_from_source_text_without_invented_fields():
+def test_positions_come_from_document_rows_without_invented_fields():
+    from backend.matching import decompose_job_positions
+    from backend.models import DocumentPosition, JobDocument
+
     job = Job(
         id=5,
-        title="Türkiye Şeker Fabrikaları sözleşmeli mühendis ve tekniker ilanı",
-        organization="Türkiye Şeker Fabrikaları A.Ş.",
-        description="\n".join((
-            "BİLGİSAYAR MÜHENDİSİ",
-            "ELEKTRİK -ELEKTRONİK MÜHENDİSİ",
-            "GIDA MÜHENDİSİ",
-            "İNŞAAT MÜHENDİSİ",
-            "KİMYA MÜHENDİSİ",
-            "MAKİNE MÜHENDİSİ",
-            "METALURJİ MÜHENDİSİ",
-            "ZİRAAT MÜHENDİSİ",
-            "İNŞAAT TEKNİKERİ",
-            "MAKİNE TEKNİKERİ",
-        )),
+        title="Sözleşmeli mühendis ve tekniker ilanı",
+        organization="Örnek Kurum",
+        description="Tüm pozisyonlar için ortak metin.",
+        kpss_score_type="P3/P93",
     )
-
-    positions = main.decompose_job_positions(job)
-
-    assert [position["position"] for position in positions] == [
-        "Bilgisayar Mühendisi",
-        "Elektrik-Elektronik Mühendisi",
-        "Gıda Mühendisi",
-        "İnşaat Mühendisi",
-        "Kimya Mühendisi",
-        "Makine Mühendisi",
-        "Metalurji Mühendisi",
-        "Ziraat Mühendisi",
-        "İnşaat Teknikeri",
-        "Makine Teknikeri",
+    document = JobDocument(id=9, job_id=5, document_url="https://x.gov.tr/a.pdf", shared_requirements="Türk vatandaşı olmak.")
+    rows = [
+        DocumentPosition(document_id=9, row_index=1, position_title="Mühendis", education_requirement="Makine Mühendisliği", quota="2", kpss_score_type="P3", kpss_min_score=70, city="Ankara", requirements_text="Makine Mühendisliği"),
+        DocumentPosition(document_id=9, row_index=2, position_title="Tekniker", education_requirement="İnşaat Teknolojisi", quota="1", kpss_score_type="P93", kpss_min_score=None, city="", requirements_text="İnşaat Teknolojisi"),
     ]
-    assert all(position["quota"] is None for position in positions)
-    assert all(position["city"] is None for position in positions)
-    assert all(position["kpss_score_type"] == "" for position in positions)
-    assert all(position["kpss_min_score"] is None for position in positions)
-    assert all(position["education_requirement"] == "" for position in positions)
+
+    positions = decompose_job_positions(job, [document], {9: rows})
+    without_rows = decompose_job_positions(job, [], {})
+
+    assert [position["position"] for position in positions] == ["Mühendis", "Tekniker"]
+    assert positions[0]["kpss_score_type"] == "P3" and positions[0]["kpss_min_score"] == 70
+    assert positions[1]["kpss_score_type"] == "P93" and positions[1]["kpss_min_score"] is None
+    assert positions[1]["city"] is None
+    # Diğer satırların bölümleri karışmasın diye satır açıklamasına ilanın tam metni eklenmez.
+    assert "ortak metin" not in positions[0]["description"]
+    assert positions[0]["position_specific"] is True
+    assert len(without_rows) == 1 and without_rows[0]["quota"] is None
 
 
 def test_source_sync_fetches_details_once_and_persists_sync_state(monkeypatch):
@@ -397,46 +425,87 @@ def test_sbb_listing_sync_uses_stable_identity_and_official_index_url(monkeypatc
                 "source_key": "sbb",
                 "source_name": self.source_name,
                 "source_url": "https://kamuilan.sbb.gov.tr/",
+                "user_url": "https://kamuilan.sbb.gov.tr/",
                 "detail_url": f"https://kamuilan.sbb.gov.tr/ilanDetay.aspx?kod=rotating-{self.fetch_count}",
                 "external_id": "stable-listing-identity",
                 "title": "1 Sözleşmeli Mühendis Alımı",
                 "institution": "Örnek Üniversitesi",
-                "city": None,
                 "quota": "1",
                 "employment_type": "Sözleşmeli",
-                "announcement_date": None,
                 "application_start_date": date(2026, 11, 10),
                 "application_end_date": date(2026, 11, 24),
-                "recruitment_method": "Kaynakta belirtilmedi",
-                "description_html": "Örnek Üniversitesi 1 Sözleşmeli Mühendis Alımı",
-                "listing_text": "Örnek Üniversitesi 1 Sözleşmeli Mühendis Alımı",
-                "listing_only": True,
                 "content_hash": "stable-listing-content",
             }]
 
         def fetch_detail(self, _url):
             self.detail_calls += 1
-            raise AssertionError("The listing-only source path must not infer detail fields.")
+            return {
+                "source_text": "Makine Mühendisliği bölümünden mezun olmak. KPSS P3 puan türünden en az 70 puan almış olmak. " * 2,
+                "content_hash": "detail",
+                "document": {
+                    "url": "https://kamuilan.sbb.gov.tr/", "title": "Resmî ilan metni", "content_type": "application/pdf",
+                    "body_hash": "a" * 64,
+                    "parsed": {"text": "Belge metni", "shared_requirements": "", "partially_read": False, "positions": [
+                        {"row_index": 1, "position_title": "Mühendis", "education_requirement": "Makine Mühendisliği", "quota": "1", "kpss_score_type": "P3", "kpss_min_score": 70.0},
+                    ]},
+                },
+            }
 
     source = RotatingLinkSource()
     monkeypatch.setattr(main, "get_source_registry", lambda: {"sbb": source})
-    monkeypatch.setenv("CAREERPILOT_SOURCE_REQUEST_DELAY_SECONDS", "0")
 
     with Session(engine) as db:
         first = main.sync_all_sources(db)
         second = main.sync_all_sources(db)
         jobs = list(db.scalars(select(Job)).all())
         links = list(db.scalars(select(SourceListing)).all())
+        matches = main.public_matches(db)
 
-    assert first["results"]["sbb"]["status"] == "partial"
-    assert second["results"]["sbb"]["status"] == "partial"
+    assert first["results"]["sbb"]["status"] == "ok"
+    assert first["results"]["sbb"]["imported"] == 1
     assert second["results"]["sbb"]["unchanged"] == 1
+    assert source.detail_calls == 1  # liste değişmedikçe detay yeniden indirilmez
     assert len(jobs) == 1
     assert jobs[0].source_url == "https://kamuilan.sbb.gov.tr/"
-    assert len(links) == 1
-    assert links[0].status == "listed_only"
+    assert jobs[0].kpss_score_type == "P3" and jobs[0].kpss_min_score == 70
+    assert len(links) == 1 and links[0].status == "complete"
     assert links[0].official_url.endswith("rotating-2")
-    assert source.detail_calls == 0
+    assert [item["position"] for item in matches["jobs"]] == ["Mühendis"]
+
+
+def test_detail_failure_keeps_listing_and_reports_partial(monkeypatch):
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    class BrokenDetailSource:
+        source_name = "İŞKUR Kamu Memur Alım İlanları"
+        pages_checked = 1
+
+        def fetch_listings(self):
+            return [{
+                "detail_url": "https://www.iskur.gov.tr/medya/x/ilan.pdf",
+                "external_id": "ilan",
+                "title": "Örnek Belediyesi Memur Alım İlanı",
+                "institution": "Örnek Belediyesi",
+                "application_end_date": date(2099, 1, 5),
+                "content_hash": "h",
+            }]
+
+        def fetch_detail(self, _url):
+            raise RuntimeError("PDF okunamadı")
+
+    monkeypatch.setattr(main, "get_source_registry", lambda: {"iskur": BrokenDetailSource()})
+    with Session(engine) as db:
+        result = main.sync_all_sources(db)
+        job = db.scalar(select(Job))
+        listing = db.scalar(select(SourceListing))
+
+    assert result["success"] is False
+    assert result["results"]["iskur"]["status"] == "partial"
+    assert result["results"]["iskur"]["detail_failed"] == 1
+    assert job.title == "Örnek Belediyesi Memur Alım İlanı"
+    assert job.application_deadline == date(2099, 1, 5)
+    assert listing.status == "detail_failed"
 
 
 def test_source_sync_failure_is_persisted_and_never_reported_as_success(monkeypatch):

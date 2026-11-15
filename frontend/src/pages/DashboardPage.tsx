@@ -1,113 +1,131 @@
-import { ArrowUpRight, CalendarClock, CircleCheck, CircleX, Clock3, FileText } from "lucide-react";
+import { ArrowRight, BellRing, CircleAlert, CircleCheck, Clock3, UserRoundPen } from "lucide-react";
 import { Link } from "react-router-dom";
-import type { ReactNode } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { JobCard } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
-import { QueryState } from "../components/shared/QueryState";
-import { MatchBadge } from "../components/shared/MatchBadge";
-import { useMatches, useProfile, useSources } from "../services/api/hooks";
-import { formatDate, formatTimestamp } from "../utils/format";
+import { EmptyState, QueryState } from "../components/shared/QueryState";
+import { useMatches, useNotifications, useProfile, useSyncStatus } from "../services/api/hooks";
+import type { Profile } from "../types/api";
+import { formatTimestamp, groupByJob, sortGroups } from "../utils/format";
 
-const COLORS = ["#087f8c", "#e7a83e", "#d66565"];
+/** Profilde eksik olup en çok ilanı "doğrulanmalı" durumunda bırakan bilgiler. */
+const PROFILE_HINTS: Record<string, { filled: (profile: Profile) => boolean; label: string }> = {
+  "Sürücü belgesi": { filled: (p) => p.driver_license !== null, label: "Sürücü belgesi bilginizi girin" },
+  YDS: { filled: (p) => p.yds_score !== null, label: "Yabancı dil puanınızı girin" },
+  Deneyim: { filled: (p) => p.experience_years !== null, label: "Mesleki deneyim sürenizi girin" },
+  Yaş: { filled: (p) => p.age !== null, label: "Yaşınızı girin" },
+  Cinsiyet: { filled: (p) => Boolean(p.gender), label: "Cinsiyet bilginizi girin" },
+  Vardiya: { filled: (p) => p.accepts_shifts !== null, label: "Vardiyalı çalışma tercihinizi belirtin" },
+};
 
 export default function DashboardPage() {
   const matches = useMatches();
   const profile = useProfile();
-  const sources = useSources();
-  const loading = matches.isLoading || profile.isLoading || sources.isLoading;
-  const error = matches.error ?? profile.error ?? sources.error;
+  const notifications = useNotifications();
+  const sync = useSyncStatus();
 
   return (
-    <QueryState isLoading={loading} error={error}>
-      {matches.data && profile.data && sources.data && (() => {
-        const data = matches.data;
-        const recent = [...data.jobs].sort((a, b) => (b.parent_job_id - a.parent_job_id)).slice(0, 5);
-        const upcoming = data.jobs
-          .filter((job) => job.application_status === "Başvuru Açık" || job.application_status === "Başvuru Başlamadı")
-          .filter((job) => job.application_deadline)
-          .sort((a, b) => (a.application_deadline || "").localeCompare(b.application_deadline || ""))
-          .slice(0, 5);
-        const matchChart = [
-          { name: "Uygun", value: data.counts.UYGUN },
-          { name: "Potansiyel", value: data.counts["POTANSİYEL OLARAK UYGUN"] },
-          { name: "Uygun değil", value: data.counts["UYGUN DEĞİL"] },
-        ];
-        const sourceChart = sources.data.map((source) => ({ name: source.name.replace(" Kamu İlanları", ""), ilan: source.job_count }));
-        const statusChart = [
-          { name: "Başvuru açık", count: data.jobs.filter((job) => job.application_status === "Başvuru Açık").length },
-          { name: "Başlamadı", count: data.jobs.filter((job) => job.application_status === "Başvuru Başlamadı").length },
-          { name: "Sona erdi", count: data.jobs.filter((job) => job.application_status === "Başvuru Sona Erdi").length },
-        ];
+    <QueryState isLoading={matches.isLoading || profile.isLoading} error={matches.error ?? profile.error}>
+      {matches.data && profile.data && (() => {
+        const active = matches.data.jobs.filter((job) => !job.is_expired && job.tracking !== "hidden");
+        const groups = groupByJob(active);
+        const suitable = groups.filter((group) => group.category === "UYGUN");
+        const potential = groups.filter((group) => group.category === "POTANSİYEL OLARAK UYGUN");
+        const closing = sortGroups(
+          groups.filter((group) => group.category !== "UYGUN DEĞİL" && group.primary.application_status === "Başvuru Açık"
+            && group.primary.days_left !== null && group.primary.days_left <= 7 && group.primary.tracking !== "applied"),
+          "deadline",
+        );
+        const top = sortGroups([...suitable, ...potential], "relevance").slice(0, 6);
+        const scores = Object.entries(profile.data.kpss_scores);
+        const profileEmpty = !profile.data.department || scores.length === 0;
+
+        const hintCounts = new Map<string, number>();
+        for (const group of potential) {
+          for (const name of new Set(group.primary.match.requirements.filter((item) => item.status === "unknown").map((item) => item.name))) {
+            if (PROFILE_HINTS[name] && !PROFILE_HINTS[name].filled(profile.data)) hintCounts.set(name, (hintCounts.get(name) ?? 0) + 1);
+          }
+        }
+        const hints = [...hintCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+        const lastSync = sync.data?.finished_at;
+
         return (
           <>
-            <PageHeader eyebrow="ÇALIŞMA ALANI / GENEL BAKIŞ" title="Kariyer gündemin" description={`${profile.data.department || "Aday profili"} · Son veri güncellemesi ${formatTimestamp(profile.data.updated_at)}`} />
-            <section className="metric-grid">
-              <Metric icon={<FileText />} label="Kamu ilanı" value={data.counts.total} tone="ink" />
-              <Metric icon={<CalendarClock />} label="Başvuru açık" value={statusChart[0].count} tone="teal" />
-              <Metric icon={<CircleCheck />} label="Uygun" value={data.counts.UYGUN} tone="green" />
-              <Metric icon={<Clock3 />} label="Potansiyel" value={data.counts["POTANSİYEL OLARAK UYGUN"]} tone="amber" />
-              <Metric icon={<CircleX />} label="Uygun değil" value={data.counts["UYGUN DEĞİL"]} tone="red" />
+            <PageHeader
+              title={suitable.length ? `Size uygun ${suitable.length} açık ilan var` : "Şu an tam uyan açık ilan yok"}
+              description={profileEmpty
+                ? "Eşleştirme için önce profilinizi doldurun: bölümünüz ve KPSS puanlarınız yeterli."
+                : `${profile.data.degree} · ${profile.data.department} · ${scores.map(([type, score]) => `${type} ${score}`).join(", ")}`}
+              action={<Link to="/profile" className="button"><UserRoundPen size={16} /> Profili düzenle</Link>}
+            />
+
+            {profileEmpty && (
+              <div className="notice notice-warn">
+                <CircleAlert size={18} aria-hidden />
+                <div><strong>Profiliniz eksik</strong><p>Bölüm ve KPSS puanı olmadan ilanlar yalnızca “doğrulanmalı” olarak görünür.</p></div>
+                <Link to="/profile" className="button button-primary">Profili doldur</Link>
+              </div>
+            )}
+
+            <section className="stat-row" aria-label="Özet sayılar">
+              <Link to="/jobs?durum=UYGUN" className="stat stat-ok"><CircleCheck size={18} aria-hidden /><strong>{suitable.length}</strong><span>Uygun ilan</span></Link>
+              <Link to="/jobs?durum=POTANS%C4%B0YEL+OLARAK+UYGUN" className="stat stat-warn"><CircleAlert size={18} aria-hidden /><strong>{potential.length}</strong><span>Doğrulanmalı</span></Link>
+              <Link to="/calendar" className="stat"><Clock3 size={18} aria-hidden /><strong>{closing.length}</strong><span>7 gün içinde kapanıyor</span></Link>
+              <Link to="/notifications" className="stat"><BellRing size={18} aria-hidden /><strong>{notifications.data?.unread ?? 0}</strong><span>Okunmamış bildirim</span></Link>
             </section>
-            <section className="chart-grid">
-              <div className="panel chart-panel">
-                <PanelTitle title="Uygunluk dağılımı" caption="Mevcut profil ve API analiz motoru" />
-                <div className="chart-wrap">
-                  <ResponsiveContainer width="100%" height={230}>
-                    <PieChart><Pie data={matchChart} dataKey="value" nameKey="name" innerRadius={58} outerRadius={88} paddingAngle={3}>{matchChart.map((entry, index) => <Cell key={entry.name} fill={COLORS[index]} />)}</Pie><Tooltip /></PieChart>
-                  </ResponsiveContainer>
-                  <div className="chart-legend">{matchChart.map((item, index) => <div key={item.name}><i style={{ background: COLORS[index] }} />{item.name}<strong>{item.value}</strong></div>)}</div>
+
+            <div className="dashboard-grid">
+              <section>
+                <div className="section-head">
+                  <h2>Öne çıkan ilanlar</h2>
+                  <Link to="/jobs">Tümünü gör <ArrowRight size={15} /></Link>
                 </div>
-              </div>
-              <div className="panel chart-panel">
-                <PanelTitle title="Başvuru durumu" caption="İlan pozisyonlarının güncel tarih sınıfları" />
-                <ResponsiveContainer width="100%" height={250}>
-                  <BarChart data={statusChart} margin={{ top: 16, right: 4, left: -20, bottom: 4 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf1f5" /><XAxis dataKey="name" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis allowDecimals={false} tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><Tooltip /><Bar dataKey="count" name="İlan" fill="#087f8c" radius={[5, 5, 0, 0]} /></BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="panel chart-panel chart-wide">
-                <PanelTitle title="Kaynaklara göre kayıtlı ilanlar" caption="Kaynak durum uç noktasından gelen gerçek sayılar" />
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={sourceChart} margin={{ top: 8, right: 12, left: -20, bottom: 4 }}><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#edf1f5" /><XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} /><YAxis allowDecimals={false} tick={{ fontSize: 11 }} axisLine={false} tickLine={false} /><Tooltip /><Bar dataKey="ilan" name="İlan" fill="#173f5f" radius={[5, 5, 0, 0]} /></BarChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-            <section className="dashboard-lower">
-              <div className="panel">
-                <PanelTitle title="Son eklenen ilanlar" link="/jobs" linkLabel="Tüm ilanlar" />
-                <div className="compact-list">{recent.map((job) => <Link className="compact-row" to="/jobs" key={job.id}><span className="compact-icon"><FileText size={16} /></span><span className="compact-main"><strong>{job.position}</strong><small>{job.organization} · {job.source_name}</small></span><MatchBadge category={job.match.category} /><ArrowUpRight size={16} className="row-arrow" /></Link>)}</div>
-              </div>
-              <div className="panel">
-                <PanelTitle title="Yaklaşan başvurular" link="/calendar" linkLabel="Takvime git" />
-                {upcoming.length ? <div className="compact-list">{upcoming.map((job) => <Link className="deadline-row" to="/calendar" key={job.id}><span className="deadline-date">{formatDate(job.application_deadline)}</span><span><strong>{job.position}</strong><small>{job.organization}</small></span></Link>)}</div> : <p className="empty-note">Tarihi yaklaşan ilan bulunmuyor.</p>}
-              </div>
-            </section>
-            <section className="profile-strip">
-              <div><span className="eyebrow">PROFİL ÖZETİ</span><strong>{profile.data.degree} · {profile.data.department}</strong><small>{profile.data.university}</small></div>
-              <div className="profile-score"><small>KPSS {profile.data.kpss_score_type}</small><strong>{profile.data.kpss_p3?.toFixed(2) ?? "—"}</strong></div>
-              <Link to="/profile" className="button button-outline">Profili görüntüle <ArrowUpRight size={15} /></Link>
-            </section>
+                {top.length ? <div className="job-list">{top.map((group) => <JobCard key={group.jobId} group={group} />)}</div>
+                  : <EmptyState title="Gösterilecek ilan yok">Kaynaklar tarandığında profilinize uyan ilanlar burada listelenir.</EmptyState>}
+              </section>
+
+              <aside className="side-stack">
+                <section className="panel">
+                  <h2>Son başvurusu yaklaşanlar</h2>
+                  {closing.length ? (
+                    <ul className="deadline-list">
+                      {closing.slice(0, 6).map((group) => (
+                        <li key={group.jobId}>
+                          <Link to={`?ilan=${group.jobId}`}>
+                            <strong>{group.organization}</strong>
+                            <span>{group.primary.days_left === 0 ? "Bugün son gün" : `${group.primary.days_left} gün kaldı`}</span>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="muted">Önümüzdeki 7 günde kapanan uygun ilan yok.</p>}
+                </section>
+
+                {hints.length > 0 && (
+                  <section className="panel">
+                    <h2>Sonuçları netleştirin</h2>
+                    <p className="muted">Profilinizde eksik olan bu bilgiler bazı ilanları “doğrulanmalı” durumunda bırakıyor.</p>
+                    <ul className="hint-list">
+                      {hints.map(([name, count]) => (
+                        <li key={name}><Link to="/profile">{PROFILE_HINTS[name].label}</Link><span>{count} ilan</span></li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+
+                <section className="panel">
+                  <h2>Veri durumu</h2>
+                  <dl className="fact-list">
+                    <div><dt>Taranan açık ilan</dt><dd>{groups.length}</dd></div>
+                    <div><dt>Pozisyon</dt><dd>{active.length}</dd></div>
+                    <div><dt>Son tarama</dt><dd>{sync.data?.running ? "Sürüyor…" : formatTimestamp(lastSync, "Bu oturumda yapılmadı")}</dd></div>
+                  </dl>
+                  <Link to="/sources" className="text-link">Kaynakları yönet <ArrowRight size={14} /></Link>
+                </section>
+              </aside>
+            </div>
           </>
         );
       })()}
     </QueryState>
   );
-}
-
-function Metric({ icon, label, value, tone }: { icon: ReactNode; label: string; value: number; tone: string }) {
-  return <div className={`metric-card metric-${tone}`}><span className="metric-icon">{icon}</span><span className="metric-label">{label}</span><strong>{value.toLocaleString("tr-TR")}</strong></div>;
-}
-
-function PanelTitle({ title, caption, link, linkLabel }: { title: string; caption?: string; link?: string; linkLabel?: string }) {
-  return <div className="panel-title"><div><h2>{title}</h2>{caption && <p>{caption}</p>}</div>{link && <Link to={link}>{linkLabel} <ArrowUpRight size={14} /></Link>}</div>;
 }

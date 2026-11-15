@@ -31,6 +31,8 @@ class Job(Base):
     is_employment: Mapped[bool] = mapped_column(Boolean, default=True)  # False ise eğitim/burs fırsatı
     status: Mapped[str] = mapped_column(String(40), default="İncelenecek")
     notes: Mapped[str] = mapped_column(Text, default="")
+    # Kullanıcının ilan takibi: "" | saved | applied | hidden
+    tracking: Mapped[str] = mapped_column(String(20), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, onupdate=func.now())
 
@@ -135,6 +137,14 @@ class CandidateProfile(Base):
     university: Mapped[str] = mapped_column(String(300), default="")
     kpss_score_type: Mapped[str] = mapped_column(String(30), default="P3")
     kpss_p3: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # {"P3": 87.6, "P93": 81.2} biçiminde tüm KPSS puanları (JSON)
+    kpss_scores: Mapped[str] = mapped_column(Text, default="{}")
+    faculty: Mapped[str] = mapped_column(String(200), default="")
+    gender: Mapped[str] = mapped_column(String(10), default="")  # "" | Kadın | Erkek
+    # Özel statü: "engelli", "eski hükümlü" (virgülle ayrılmış)
+    special_status: Mapped[str] = mapped_column(String(100), default="")
+    # Bölümün ilanlarda geçebilecek diğer adları, virgülle ayrılmış
+    department_aliases: Mapped[str] = mapped_column(Text, default="")
     preferred_locations: Mapped[str] = mapped_column(String(500), default="Türkiye geneli")
     accepts_shifts: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     yds_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -148,3 +158,28 @@ class CandidateProfile(Base):
     skills: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, onupdate=func.now())
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # new_match | deadline
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(200), unique=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True, index=True)
+    category: Mapped[str] = mapped_column(String(40), default="")
+    title: Mapped[str] = mapped_column(String(400), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AppSetting(Base):
+    """Küçük anahtar/değer ayarları (bildirim tercihleri vb.)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")

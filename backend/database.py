@@ -40,9 +40,13 @@ def ensure_sqlite_database_file_exists(database_url: str) -> None:
         database_path = Path(database)
 
     if not database_path.is_file():
+        if os.getenv("CAREERPILOT_DB_AUTOCREATE", "").strip().casefold() in {"1", "true", "yes", "on"}:
+            database_path.parent.mkdir(parents=True, exist_ok=True)
+            return
         raise FileNotFoundError(
             f"SQLite veritabanı bulunamadı: {database_path.resolve()}. "
-            "careerpilot.db dosyasını proje köküne yerleştirin; boş veritabanı oluşturulmadı."
+            "careerpilot.db dosyasını proje köküne yerleştirin veya boş bir veritabanıyla başlamak için "
+            "CAREERPILOT_DB_AUTOCREATE=true ayarlayın."
         )
 
 

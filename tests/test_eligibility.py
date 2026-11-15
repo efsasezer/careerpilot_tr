@@ -281,22 +281,25 @@ def test_scenario_16_duplicate_sync_no_duplicate_record(monkeypatch):
     test_engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(test_engine)
     url = "https://kariyerkapisi.gov.tr/IlanDetay?i=test16"
-    listings = [
-        {"url": url, "institution": "Test Kurumu", "department": "", "title": "Bilgisayar Mühendisi", "end_date": ""},
-    ]
-    monkeypatch.setattr(main, "scrape_public_active_listings", lambda: listings)
-    monkeypatch.setattr(main, "scrape_public_listing_details", lambda _: {
-        url: {"details": {"source_text": "Test metni", "title": "Bilgisayar Mühendisi"}, "error": None},
-    })
+
+    class Source:
+        source_name = "Kariyer Kapısı"
+        pages_checked = 1
+
+        def fetch_listings(self):
+            return [{"detail_url": url, "external_id": "test16", "title": "Bilgisayar Mühendisi", "institution": "Test Kurumu", "content_hash": "x"}]
+
+        def fetch_detail(self, _url):
+            return {"source_text": "Bilgisayar Mühendisliği bölümünden mezun olmak. " * 3, "content_hash": "d"}
+
+    monkeypatch.setattr(main, "get_source_registry", lambda: {"kariyer-kapisi": Source()})
+    monkeypatch.setattr("backend.sync.sync_jobs_documents", lambda db, jobs: {"errors": 0})
 
     with Session(test_engine) as db:
-        main.sync_kariyer_kapisi(db)
-        main.sync_kariyer_kapisi(db)
-        count = db.scalar(
-            select(Job).where(Job.source_url == url)
-        )
-    # İlan sadece bir kez kaydedilmiş olmalı
-    assert count is not None
+        main.sync_all_sources(db)
+        main.sync_all_sources(db)
+        count = len(list(db.scalars(select(Job).where(Job.source_url == url)).all()))
+    assert count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +463,7 @@ def test_p3_is_used_when_listing_accepts_p1_p2_and_p3():
             description="YDS puanı en az 70 olmalıdır."),
         profile(),
     )
-    assert "P3 puanı 87.60" in r["reason"]
+    assert "P3 puanınız 87.60" in r["reason"]
     assert r["category"] == POTANSIYEL
     assert any("YDS" in item for item in r["unknown_conditions"])
 
@@ -658,7 +661,8 @@ def test_missing_deadline_is_not_marked_expired():
 
     assert detect_application_status(date(2026, 11, 1), None, today=today) == "Tarih belirtilmemiş"
     assert detect_application_status(None, None, today=today) == "Tarih belirtilmemiş"
-    assert detect_application_status(None, date(2026, 11, 14), today=today) == "Tarih belirtilmemiş"
+    # Son başvuru tarihi geçmemişse (başlangıç bilinmese de) başvuru açıktır.
+    assert detect_application_status(None, date(2026, 11, 14), today=today) == "Başvuru Açık"
     assert detect_application_status(None, date(2026, 11, 13), today=today) == "Başvuru Sona Erdi"
 
 

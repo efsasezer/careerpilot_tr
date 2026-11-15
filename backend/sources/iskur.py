@@ -102,7 +102,8 @@ class IskurSource(BaseJobSource):
                         continue
                     seen_urls.add(detail_url)
 
-                    deadline = _parse_iskur_deadline(date_text)
+                    deadline = _parse_iskur_deadline(date_text) or _parse_iskur_deadline(title)
+                    title = re.sub(r"\s*\d{1,2}\.\d{1,2}\.\d{4}\s*$", "", title).strip() or title
                     institution = _extract_institution(title)
 
                     results.append(self.normalize_listing({
@@ -118,8 +119,8 @@ class IskurSource(BaseJobSource):
                         "announcement_date": None,
                         "application_start_date": None,
                         "application_end_date": deadline,
-                        "employment_type": "Kamu Memur / Sözleşmeli",
-                        "recruitment_method": "İŞKUR Kamu İlanı",
+                        "employment_type": "",
+                        "recruitment_method": "",
                         "description_html": f"<p>{title}</p><p>Son Başvuru: {date_text}</p><p>Görev Yeri: {city_name}</p>",
                         "content_hash": content_hash(title, detail_url, date_text),
                         "metadata": {
@@ -173,25 +174,18 @@ class IskurSource(BaseJobSource):
 
     def fetch_detail(self, url: str) -> dict[str, Any]:
         path = urlsplit(url).path.casefold()
-        if path.endswith(".pdf"):
-            from ..documents import fetch_url, parse_document
+        if path.endswith((".pdf", ".docx")):
+            from ..documents import fetch_url
             try:
-                doc_res = fetch_url(url, max_bytes=10 * 1024 * 1024)
-                if doc_res.get("not_modified"):
-                    return {"source_text": "", "content_hash": "", "detail_url": url, "positions": []}
-                parsed = parse_document(url, doc_res["body"], doc_res["content_type"])
-                text = parsed.get("text") or ""
-                return {
-                    "source_text": text,
-                    "content_hash": content_hash(text),
-                    "detail_url": url,
-                    "positions": parsed.get("positions") or [],
-                }
+                response = fetch_url(url)
+                return self.document_detail(
+                    url, response["body"], response["content_type"], "Resmî ilan metni (İŞKUR)"
+                )
             except Exception as error:
                 raise SourceFetchError(
                     self.source_name,
                     url,
-                    f"İŞKUR ek PDF belgesi ayrıştırılamadı: {error}",
+                    f"İŞKUR ilan belgesi okunamadı: {error}",
                 ) from error
 
         final_url, html = fetch_html(self.source_name, url)

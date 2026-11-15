@@ -101,55 +101,59 @@ def test_sync_enriches_existing_job_without_changing_status_or_notes(monkeypatch
     Base.metadata.create_all(engine)
     url = "https://kariyerkapisi.gov.tr/IlanDetay?i=one"
     failed_url = "https://kariyerkapisi.gov.tr/IlanDetay?i=two"
-    listings = [
-        {"url": url, "institution": "Kurum", "department": "Birim", "title": "Eski başlık", "end_date": "09 Kasım 2026"},
-        {"url": failed_url, "institution": "Başka Kurum", "department": "", "title": "İkinci ilan", "end_date": ""},
-        {"url": url, "institution": "Kurum", "department": "Birim", "title": "Eski başlık", "end_date": "09 Kasım 2026"},
-    ]
 
-    monkeypatch.setattr(main, "scrape_public_active_listings", lambda: listings)
-    monkeypatch.setattr(main, "scrape_public_listing_details", lambda _: {
-        url: {
-            "details": {
+    class Source:
+        source_name = "Kariyer Kapısı"
+        pages_checked = 1
+
+        def fetch_listings(self):
+            return [
+                {"detail_url": url, "external_id": "one", "title": "Yeni başlık", "institution": "Kurum", "application_end_date": "09 Kasım 2026", "content_hash": "a"},
+                {"detail_url": failed_url, "external_id": "two", "title": "İkinci ilan", "institution": "Başka Kurum", "content_hash": "b"},
+            ]
+
+        def fetch_detail(self, detail_url):
+            if detail_url == failed_url:
+                raise RuntimeError("HTTP 503")
+            return {
                 "title": "Yeni başlık", "position": "Uzman", "quota": "1",
                 "start_date": "01.11.2026", "end_date": "09 Kasım 2026",
                 "kpss_score_type": "P3", "education_requirement": "Lisans",
                 "departments": "Bilgisayar Mühendisliği", "qualification_codes": "",
-                "city": "Burdur", "source_text": "Resmî ilan metni",
-            },
-            "error": None,
-        },
-        failed_url: {"details": {"source_text": ""}, "error": "HTTP 503"},
-    })
+                "city": "Burdur", "source_text": "Resmî ilan metni. " * 8, "content_hash": "d",
+            }
+
+    monkeypatch.setattr(main, "get_source_registry", lambda: {"kariyer-kapisi": Source()})
+    monkeypatch.setattr("backend.sync.sync_jobs_documents", lambda db, jobs: {"errors": 0})
 
     with Session(engine) as db:
-        job = Job(
+        db.add(Job(
             sector="public", title="Eski başlık", organization="Kurum", source_url=url,
-            description="Kullanıcının açıklaması", status="Başvuruldu", notes="Kullanıcı notu",
-        )
-        db.add(job)
+            description="Eski açıklama", status="Başvuruldu", notes="Kullanıcı notu", tracking="applied",
+        ))
         db.commit()
 
-        result = main.sync_kariyer_kapisi(db)
+        result = main.sync_all_sources(db)["results"]["kariyer-kapisi"]
         saved = db.scalar(select(Job).where(Job.source_url == url))
 
-        assert result["created"] == 1
+        assert result["imported"] == 1
         assert result["updated"] == 1
-        assert result["skipped"] == 1
-        assert result["detail_read"] == 1
         assert result["detail_failed"] == 1
+        assert result["status"] == "partial"
         assert saved.title == "Yeni başlık"
         assert saved.kpss_score_type == "P3"
         assert saved.education_requirement == "Bilgisayar Mühendisliği"
         assert saved.city == "Burdur"
+        assert saved.application_start.isoformat() == "2026-11-01"
+        assert saved.application_deadline.isoformat() == "2026-11-09"
+        # Kullanıcının takip bilgileri senkronizasyonda korunur.
         assert saved.status == "Başvuruldu"
         assert saved.notes == "Kullanıcı notu"
-        assert "Kullanıcının açıklaması" in saved.description
+        assert saved.tracking == "applied"
         assert "Resmî ilan metni" in saved.description
 
-        second_result = main.sync_kariyer_kapisi(db)
-        assert second_result["updated"] == 0
-        assert second_result["unchanged"] == 2
+        second = main.sync_all_sources(db)["results"]["kariyer-kapisi"]
+        assert second["imported"] == 0
 
 
 def test_public_matches_returns_department_score_and_unknown_details():
@@ -311,7 +315,7 @@ def test_p3_is_used_when_listing_accepts_p1_p2_and_p3():
     profile = build_candidate_profile()
     job = {"title": "Uzman", "education_requirement": "Lisans Bilgisayar Mühendisliği", "kpss_score_type": "P1/P2/P3", "kpss_min_score": 80, "description": "YDS puanı en az 70 olmalıdır."}
     result = classify_public_job(job, profile)
-    assert "P3 puanı 87.60" in result["reason"]
+    assert "P3 puanınız 87.60" in result["reason"]
     assert result["category"] == "POTANSİYEL OLARAK UYGUN"
     assert any("YDS" in item for item in result["unknown_conditions"])
 

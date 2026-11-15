@@ -1,0 +1,408 @@
+"""Kayıtlı ilanları aday profiliyle eşleştirip API ve bildirimler için hazırlar."""
+
+from __future__ import annotations
+
+from datetime import date
+import re
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from .eligibility import (
+    build_candidate_profile,
+    classify_public_job,
+    detect_application_status,
+    detect_recruitment_method,
+    normalize_text,
+)
+from .models import CandidateProfile, DocumentPosition, Job, JobDocument, JobDocumentScan
+from .sync import _role_words, organization_key
+
+CATEGORY_ORDER = {"UYGUN": 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2}
+CITIES = (
+    "adana", "adiyaman", "afyonkarahisar", "agri", "aksaray", "amasya", "ankara", "antalya", "ardahan", "artvin",
+    "aydin", "balikesir", "bartin", "batman", "bayburt", "bilecik", "bingol", "bitlis", "bolu", "burdur", "bursa",
+    "canakkale", "cankiri", "corum", "denizli", "diyarbakir", "duzce", "edirne", "elazig", "erzincan", "erzurum",
+    "eskisehir", "gaziantep", "giresun", "gumushane", "hakkari", "hatay", "igdir", "isparta", "istanbul", "izmir",
+    "kahramanmaras", "karabuk", "karaman", "kars", "kastamonu", "kayseri", "kilis", "kirikkale", "kirklareli",
+    "kirsehir", "kocaeli", "konya", "kutahya", "malatya", "manisa", "mardin", "mersin", "mugla", "mus", "nevsehir",
+    "nigde", "ordu", "osmaniye", "rize", "sakarya", "samsun", "sanliurfa", "siirt", "sinop", "sirnak", "sivas",
+    "tekirdag", "tokat", "trabzon", "tunceli", "usak", "van", "yalova", "yozgat", "zonguldak",
+)
+
+
+def _preferred_cities(profile: dict) -> list[str]:
+    text = normalize_text(profile.get("preferred_locations") or "")
+    if not text.strip() or "turkiye geneli" in text or "tum" in text.split() or "fark etmez" in text:
+        return []
+    return [part.strip() for part in re.split(r"[,;/\n]", text) if part.strip()]
+
+
+def location_match(preferred: list[str], *texts: str) -> bool | None:
+    """True: tercih edilen şehirde, False: başka şehirde, None: şehir bilinmiyor/tercih yok."""
+    if not preferred:
+        return None
+    haystack = normalize_text(" ".join(text or "" for text in texts))
+    if any(re.search(rf"(?<![a-z]){re.escape(city)}(?![a-z])", haystack) for city in preferred):
+        return True
+    known = any(re.search(rf"(?<![a-z]){city}(?![a-z])", haystack) for city in CITIES)
+    return False if known else None
+
+
+def _base_position(job: Job) -> dict:
+    title = job.title or ""
+    return {
+        "sub_id": str(job.id),
+        "parent_id": job.id,
+        "organization": job.organization or "Kurum belirtilmemiş",
+        "title": title,
+        "position": title.split(" - ")[-1] if " - " in title else title,
+        "quota": job.quota or None,
+        "city": job.city or None,
+        "kpss_score_type": job.kpss_score_type or "",
+        "kpss_min_score": job.kpss_min_score,
+        "education_requirement": job.education_requirement or "",
+        "qualification_codes": job.qualification_codes or "",
+        "description": job.description or "",
+        "source_url": job.source_url or None,
+        "source_name": job.source_name or "Kaynak belirtilmemiş",
+        "application_start": job.application_start,
+        "application_deadline": job.application_deadline,
+        "recruitment_method": job.recruitment_method or detect_recruitment_method(title, job.description or ""),
+        "employment_type": job.employment_type or "",
+    }
+
+
+def decompose_job_positions(job: Job, documents: list[JobDocument], positions_by_document: dict) -> list[dict]:
+    """Belgedeki kadro tablosu varsa her satırı ayrı pozisyon olarak döndürür."""
+    base = _base_position(job)
+    shared_text = "\n".join(document.shared_requirements for document in documents if document.shared_requirements)
+    rows = [
+        (document, position)
+        for document in documents
+        for position in positions_by_document.get(document.id, [])
+    ]
+    if not rows:
+        # Kadro tablosu ayrıştırılamadıysa ek belgelerin metni de değerlendirmeye katılır.
+        extra = [
+            document.extracted_text for document in documents
+            if document.extracted_text and document.extracted_text[:200] not in base["description"]
+        ]
+        if extra:
+            base["description"] = "\n".join(filter(None, (base["description"], *extra)))[:120_000]
+        return [base]
+
+    result, seen = [], set()
+    for document, row in rows:
+        title = row.position_title or row.education_requirement or "Kadro satırı"
+        key = normalize_text("|".join((
+            title, row.education_requirement, row.quota, row.kpss_score_type, str(row.kpss_min_score), row.city,
+        )))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            **base,
+            "sub_id": f"{job.id}-document-{document.id}-{row.row_index}",
+            "title": f"{job.title} — {title}",
+            "position": title[:200],
+            "quota": row.quota or job.quota or None,
+            "city": row.city or job.city or None,
+            "kpss_score_type": row.kpss_score_type or job.kpss_score_type or "",
+            "kpss_min_score": row.kpss_min_score if row.kpss_min_score is not None else job.kpss_min_score,
+            "education_requirement": row.education_requirement or job.education_requirement or "",
+            "qualification_codes": row.qualification_codes or job.qualification_codes or "",
+            # Satırın kendi şartları + bütün pozisyonlar için ortak şartlar; diğer satırların
+            # bölümleri bu pozisyona karışmasın diye ilanın tam metni eklenmez.
+            "description": "\n".join(filter(None, (shared_text, row.requirements_text))),
+            "position_specific": bool(row.education_requirement),
+            "source_document_id": document.id,
+            "written_exam_invite_text": row.written_exam_invite_text,
+            "written_exam_invite_count": row.written_exam_invite_count,
+        })
+    return result
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _document_review(scan, documents, positions_by_document) -> dict:
+    return {
+        "status": scan.status if scan else "not_scanned",
+        "error": scan.error if scan else "",
+        "checked_at": _iso(scan.checked_at) if scan else None,
+        "documents": [
+            {
+                "id": document.id,
+                "title": document.title,
+                "url": document.document_url,
+                "status": document.status,
+                "content_hash": document.content_hash,
+                "parsed_content_hash": document.parsed_content_hash,
+                "error": document.error,
+                "checked_at": _iso(document.checked_at),
+                "positions": [
+                    {
+                        "row_index": row.row_index,
+                        "position_title": row.position_title,
+                        "education_requirement": row.education_requirement,
+                        "quota": row.quota,
+                        "kpss_score_type": row.kpss_score_type,
+                        "kpss_min_score": row.kpss_min_score,
+                        "city": row.city,
+                        "qualification_codes": row.qualification_codes,
+                        "written_exam_invite_text": row.written_exam_invite_text,
+                        "written_exam_invite_count": row.written_exam_invite_count,
+                    }
+                    for row in positions_by_document.get(document.id, [])
+                ],
+            }
+            for document in documents
+        ],
+    }
+
+
+def _roles_compatible(first: set[str], second: set[str]) -> bool:
+    """Bir kaynak "memur", diğeri "zabıta memuru" yazabilir; ikisi aynı ilandır."""
+    if first == second:
+        return True
+    civil = {"memur", "zabita", "itfaiye"}
+    return ("memur" in first or "memur" in second) and first <= civil and second <= civil
+
+
+def _duplicate_groups(jobs: list[Job]) -> tuple[set[int], dict[int, list[Job]]]:
+    """Aynı ilanın farklı kaynaklardaki kopyalarını bulur: (gizlenecek id'ler, birincil id -> kopyalar)."""
+    by_org: dict[str, list[Job]] = {}
+    for job in jobs:
+        key = organization_key(job.organization)
+        if key and job.is_employment:
+            by_org.setdefault(key, []).append(job)
+
+    hidden: set[int] = set()
+    copies: dict[int, list[Job]] = {}
+    for members in by_org.values():
+        if len(members) < 2:
+            continue
+        clusters: list[list[Job]] = []
+        # En ayrıntılı kayıt kümenin birincili olur.
+        for job in sorted(members, key=lambda item: (-len(item.description or ""), item.id)):
+            roles = _role_words(job.title)
+            for cluster in clusters:
+                primary = cluster[0]
+                if any(other.source_name == job.source_name for other in cluster):
+                    continue  # aynı kaynaktaki iki kayıt farklı ilanlardır
+                same_deadline = job.application_deadline == primary.application_deadline
+                missing_deadline = job.application_deadline is None or primary.application_deadline is None
+                if (same_deadline and job.application_deadline is not None) or (
+                    missing_deadline and any(_roles_compatible(roles, _role_words(other.title)) for other in cluster)
+                ):
+                    cluster.append(job)
+                    break
+            else:
+                clusters.append([job])
+        for cluster in clusters:
+            for job in cluster[1:]:
+                hidden.add(job.id)
+                copies.setdefault(cluster[0].id, []).append(job)
+    return hidden, copies
+
+
+_CACHE: dict[tuple, dict] = {}
+
+
+def invalidate_cache() -> None:
+    """Profil, takip veya ilan verisi değiştiğinde çağrılır."""
+    _CACHE.clear()
+
+
+def _data_version(db: Session, profile) -> tuple:
+    """Eşleştirme sonucunu etkileyen verinin ucuz bir parmak izi (önbellek anahtarı)."""
+    jobs = db.execute(select(func.count(Job.id), func.max(Job.updated_at), func.max(Job.created_at), func.max(Job.id))).one()
+    documents = db.execute(select(func.count(JobDocument.id), func.max(JobDocument.checked_at))).one()
+    positions = db.scalar(select(func.count(DocumentPosition.id)))
+    tracked = db.execute(
+        select(Job.id, Job.tracking, Job.status).where((Job.tracking != "") | (Job.status == "İptal edildi")).order_by(Job.id)
+    ).all()
+    return (
+        tuple(jobs), tuple(documents), positions, tuple(map(tuple, tracked)),
+        getattr(profile, "updated_at", None), getattr(profile, "kpss_scores", None), getattr(profile, "department", None),
+    )
+
+
+def build_matches(db: Session, *, full: bool = True, today: date | None = None, only_job_ids: list[int] | None = None) -> dict:
+    """Bütün kamu ilanlarını profile göre sınıflandırır.
+
+    full=False olduğunda uzun metinler (ilan açıklaması, belge incelemesi) yanıta eklenmez.
+    """
+    today = today or date.today()
+    stored_profile = db.get(CandidateProfile, 1)
+    cache_key = None
+    if only_job_ids is None:
+        cache_key = (str(db.get_bind().url), full, today, _data_version(db, stored_profile))
+        if cache_key in _CACHE:
+            return _CACHE[cache_key]
+    profile = build_candidate_profile(stored_profile)
+    preferred = _preferred_cities(profile)
+
+    jobs = list(db.scalars(select(Job).where(Job.sector == "public").order_by(Job.id.desc())).all())
+    job_ids = [job.id for job in jobs]
+    scans = {
+        scan.job_id: scan
+        for scan in db.scalars(select(JobDocumentScan).where(JobDocumentScan.job_id.in_(job_ids))).all()
+    } if job_ids else {}
+    documents_by_job: dict[int, list[JobDocument]] = {}
+    documents = list(db.scalars(
+        select(JobDocument).where(JobDocument.job_id.in_(job_ids)).order_by(JobDocument.id)
+    ).all()) if job_ids else []
+    for document in documents:
+        documents_by_job.setdefault(document.job_id, []).append(document)
+    positions_by_document: dict[int, list[DocumentPosition]] = {}
+    document_ids = [document.id for document in documents]
+    if document_ids:
+        for row in db.scalars(
+            select(DocumentPosition).where(DocumentPosition.document_id.in_(document_ids))
+            .order_by(DocumentPosition.document_id, DocumentPosition.row_index)
+        ).all():
+            positions_by_document.setdefault(row.document_id, []).append(row)
+
+    hidden, copies = _duplicate_groups(jobs)
+    if only_job_ids is not None:
+        hidden = set()
+        jobs = [job for job in jobs if job.id in set(only_job_ids)]
+    counts = {"UYGUN": 0, "POTANSİYEL OLARAK UYGUN": 0, "UYGUN DEĞİL": 0}
+    items, opportunities = [], []
+
+    for job in jobs:
+        if job.id in hidden:
+            continue
+        cancelled = job.status == "İptal edildi"
+        job_status = "İptal Edildi" if cancelled else detect_application_status(job.application_start, job.application_deadline, today)
+
+        if not job.is_employment:
+            opportunities.append({
+                "id": job.id,
+                "title": job.title,
+                "organization": job.organization,
+                "city": job.city or "",
+                "source_url": job.source_url or None,
+                "source_name": job.source_name or "Kaynak belirtilmemiş",
+                "application_start": _iso(job.application_start),
+                "application_deadline": _iso(job.application_deadline),
+                "application_status": job_status,
+                "category": "Eğitim & Burs Fırsatı",
+                "description": (job.description or "")[: None if full else 600],
+            })
+            continue
+
+        job_documents = documents_by_job.get(job.id, [])
+        review = _document_review(scans.get(job.id), job_documents, positions_by_document) if full else None
+        duplicates = copies.get(job.id, [])
+        also_listed = [
+            {"source_name": other.source_name, "source_url": other.source_url or None} for other in duplicates
+        ]
+        tracking = job.tracking or next((other.tracking for other in duplicates if other.tracking), "")
+        for position in decompose_job_positions(job, job_documents, positions_by_document):
+            # Birincil kayıtta eksik olan tarih/şehir bilgisi diğer kaynaktaki kopyadan tamamlanır.
+            for field in ("application_deadline", "application_start", "city"):
+                if not position[field]:
+                    position[field] = next((getattr(other, field) for other in duplicates if getattr(other, field)), None)
+            match = classify_public_job(position, profile)
+            counts[match["category"]] += 1
+            status = "İptal Edildi" if cancelled else detect_application_status(
+                position["application_start"], position["application_deadline"], today,
+            )
+            deadline = position["application_deadline"]
+            item = {
+                "id": position["sub_id"],
+                "parent_job_id": job.id,
+                "title": position["title"],
+                "organization": position["organization"],
+                "position": position["position"],
+                "city": position["city"],
+                "quota": position["quota"],
+                "source_url": position["source_url"],
+                "source_name": position["source_name"],
+                "also_listed": also_listed,
+                "announcement_date": _iso(job.announcement_date),
+                "application_start": _iso(position["application_start"]),
+                "application_deadline": _iso(deadline),
+                "days_left": (deadline - today).days if deadline and status in ("Başvuru Açık", "Başvuru Başlamadı") else None,
+                "application_status": status,
+                "is_expired": status in ("Başvuru Sona Erdi", "İptal Edildi"),
+                "recruitment_method": position["recruitment_method"] or "Kaynakta belirtilmedi",
+                "employment_type": position["employment_type"] or "Kaynakta belirtilmedi",
+                "education_requirement": (
+                    position["education_requirement"] if position.get("position_specific")
+                    else match["education"]["requirement"][:600] or position["education_requirement"]
+                ),
+                "qualification_codes": position["qualification_codes"] or ", ".join(match["qualification_codes"]),
+                "kpss_score_type": position["kpss_score_type"] or "/".join(match["kpss"]["score_types"]),
+                "kpss_min_score": position["kpss_min_score"] if position["kpss_min_score"] is not None else match["kpss"]["minimum_score"],
+                "location_match": location_match(preferred, position["city"] or "", job.organization, job.title),
+                "tracking": tracking,
+                "notes": job.notes or "",
+                "first_seen": _iso(job.created_at),
+                "written_exam_invite_text": position.get("written_exam_invite_text") or "",
+                "written_exam_invite_count": position.get("written_exam_invite_count"),
+                "match": {
+                    "category": match["category"],
+                    "reason": match["reason"],
+                    "kind": match["kind"],
+                    "data_quality": match["data_quality"],
+                    "met_conditions": match["met_conditions"],
+                    "failed_conditions": match["failed_conditions"],
+                    "unknown_conditions": match["unknown_conditions"],
+                    "general_conditions": match["general_conditions"],
+                    "requirements": match["requirements"],
+                    "education": match["education"] if full else {
+                        key: value for key, value in match["education"].items() if key != "requirement"
+                    },
+                    "kpss": match["kpss"],
+                },
+            }
+            if full:
+                item["description"] = job.description or position["description"]
+                item["document_review"] = review
+            items.append(item)
+
+    result = {
+        "profile": profile,
+        "counts": {"total": len(items), **counts, "education_count": len(opportunities)},
+        "jobs": items,
+        "education_opportunities": opportunities,
+        "generated_at": today.isoformat(),
+    }
+    if cache_key is not None:
+        if len(_CACHE) >= 4:
+            _CACHE.clear()
+        _CACHE[cache_key] = result
+    return result
+
+
+def job_summaries(matches: dict) -> list[dict]:
+    """Pozisyon bazlı sonuçları ilan bazında özetler (bildirimler için)."""
+    grouped: dict[int, dict] = {}
+    for item in matches["jobs"]:
+        summary = grouped.setdefault(item["parent_job_id"], {
+            "job_id": item["parent_job_id"],
+            "organization": item["organization"],
+            "title": item["title"].split(" — ")[0],
+            "source_name": item["source_name"],
+            "application_deadline": item["application_deadline"],
+            "application_status": item["application_status"],
+            "days_left": item["days_left"],
+            "tracking": item["tracking"],
+            "location_match": item["location_match"],
+            "category": item["match"]["category"],
+            "data_quality": item["match"]["data_quality"],
+            "positions": [],
+        })
+        if CATEGORY_ORDER[item["match"]["category"]] < CATEGORY_ORDER[summary["category"]]:
+            summary["category"] = item["match"]["category"]
+            summary["data_quality"] = item["match"]["data_quality"]
+        if item["location_match"]:
+            summary["location_match"] = True
+        if item["match"]["category"] != "UYGUN DEĞİL":
+            summary["positions"].append(item["position"])
+    return list(grouped.values())

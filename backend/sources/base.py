@@ -1,6 +1,7 @@
 """Genişletilebilir kamu ilanı kaynak mimarisi.
 
-KESİN KURAL: PDF İNDİRME VE OKUMA YOKTUR.
+Her kaynak `fetch_listings()` ile liste kayıtlarını, `fetch_detail()` ile ilanın
+ayrıntılı metnini (HTML sayfası veya resmî PDF/DOCX belgesi) döndürür.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from html.parser import HTMLParser
 import re
+import time
 from typing import Any, Dict, List
 from urllib.parse import urljoin
 
@@ -72,15 +74,27 @@ def parse_html_page(html: str) -> tuple[list[dict[str, str]], str]:
     return parser.links, "\n".join(line for line in lines if line)
 
 
-def fetch_html(source_name: str, url: str) -> tuple[str, str]:
-    try:
-        response = requests.get(
-            url,
-            timeout=(5, 25),
-            headers={"User-Agent": "CareerPilotTR/1.0 (public job listing index)"},
-        )
-    except requests.RequestException as error:
-        raise SourceFetchError(source_name, url, str(error)) from error
+USER_AGENT = "CareerPilotTR/1.0 (public job listing index)"
+DEFAULT_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/pdf;q=0.9,*/*;q=0.8",
+    "Accept-Language": "tr-TR,tr;q=0.9",
+}
+
+
+def fetch_html(source_name: str, url: str, session: requests.Session | None = None) -> tuple[str, str]:
+    client = session or requests
+    response = None
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = client.get(url, timeout=(8, 30), headers=DEFAULT_HEADERS)
+            break
+        except requests.RequestException as error:
+            last_error = error
+            time.sleep(1.5 * (attempt + 1))
+    if response is None:
+        raise SourceFetchError(source_name, url, str(last_error)) from last_error
     if response.status_code != 200:
         raise SourceFetchError(source_name, url, "Kaynak sayfası alınamadı.", response.status_code)
     response.encoding = response.apparent_encoding or response.encoding
@@ -143,6 +157,25 @@ class BaseJobSource(ABC):
         payload.setdefault("content_hash", "")
         payload.setdefault("metadata", {})
         return payload
+
+    @staticmethod
+    def document_detail(url: str, body: bytes, content_type: str, title: str = "") -> Dict[str, Any]:
+        """Detayı doğrudan resmî belge (PDF/DOCX) olan ilanlar için ortak ayrıştırma."""
+        from ..documents import parse_document
+
+        parsed = parse_document(url, body, content_type)
+        return {
+            "source_text": parsed["text"],
+            "content_hash": sha256(body).hexdigest(),
+            "detail_url": url,
+            "document": {
+                "url": url,
+                "title": title or "Resmî ilan metni",
+                "content_type": content_type,
+                "body_hash": sha256(body).hexdigest(),
+                "parsed": parsed,
+            },
+        }
 
     def fetch_detail(self, url: str) -> Dict[str, Any]:
         final_url, html = fetch_html(self.source_name, url)

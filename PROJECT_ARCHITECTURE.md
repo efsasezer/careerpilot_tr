@@ -1,72 +1,60 @@
 # Project architecture
 
-## Runtime components
-
 ```text
-Browser
-  └── React + TypeScript + Vite static site (careerpilot-tr-web)
-        └── HTTPS GET + Bearer authorization
-              └── FastAPI (careerpilot-tr-api)
-                    └── SQLAlchemy → project-root careerpilot.db
-
-Legacy Streamlit service (careerpilot-tr-frontend)
-  └── Reads API_URL and CAREERPILOT_ACCESS_TOKEN from its server environment
-        └── FastAPI
+Browser (React + TypeScript, Vite)
+  └── Bearer access key ──> FastAPI (backend/main.py)
+                               ├── matching.py      classify stored listings against the profile (cached)
+                               ├── eligibility.py   requirement extraction + per-requirement verdicts
+                               ├── notifications.py in-app records, e-mail / Telegram digests
+                               ├── sync.py          source sync, background runner, scheduler
+                               │     └── sources/*  SBB, Kariyer Kapısı, İŞKUR, Yerel Yönetimler
+                               ├── documents.py     PDF / DOCX / HTML text + staff-table parsing
+                               └── SQLAlchemy ──> SQLite (careerpilot.db)
 ```
 
-The three Render services are defined independently in `render.yaml`. The
-React app is a static site; its build receives only `VITE_API_URL`. Never pass
-`CAREERPILOT_ACCESS_TOKEN` to the static service or use a `VITE_` variable for
-secrets: Vite embeds those variables in public browser assets.
+## Data flow
 
-## React application
+1. `sync.run_sync` asks each source for its listing index, upserts a `Job` per listing
+   (identity: `source_listings.external_id`), and fetches the detail only when the listing is
+   new or its list hash changed. Details are official PDFs (SBB, İŞKUR) or HTML pages.
+2. Parsed staff-table rows are stored as `document_positions`; `matching.decompose_job_positions`
+   turns each row into a position evaluated only against its own requirements.
+3. `eligibility.classify_public_job` returns `met / not_met / unknown` per requirement and a
+   category. It never invents profile data: missing information yields `unknown`.
+4. `matching.build_matches` merges the same announcement published by several sources and caches
+   the result until the profile, tracking state or listings change.
+5. After every sync and profile update `notifications.process_notifications` creates one
+   `new_match` record per listing/category and `deadline` reminders, then sends a digest to the
+   enabled channels. Records are deduplicated by `dedupe_key`.
 
-- `src/app/`: route setup and access-key session flow.
-- `src/components/`: shared layout, status, badge, and analysis components.
-- `src/pages/`: dashboard, job search, matches, candidate profile, sources,
-  calendar, opportunities, and settings screens.
-- `src/services/api/`: typed HTTP client, in-memory auth context, and
-  TanStack Query hooks.
-- `src/types/`: TypeScript contracts for backend responses.
+## API surface (all except `/health` require `Authorization: Bearer <CAREERPILOT_ACCESS_TOKEN>`)
 
-The backend remains authoritative for eligibility. The frontend displays
-classifications and detailed reasoning returned by `/public/matches`; it does
-not implement a second matching engine. Browser-side search and filters only
-change the visible collection.
+| Route | Purpose |
+|---|---|
+| `GET /matches` | Lean classified positions for the UI |
+| `GET /jobs/{id}/detail` | Full text, documents and per-position verdicts for one listing |
+| `PATCH /jobs/{id}/tracking` | saved / applied / hidden + notes |
+| `GET/PUT /profile` | Candidate profile (`kpss_scores` holds every score type) |
+| `GET /notifications`, `POST /notifications/{id}/read`, `POST /notifications/read-all` | Notification centre |
+| `GET/PUT /notifications/settings`, `POST /notifications/test` | Preferences and channel test |
+| `POST /sync`, `GET /sync/status` | Start a background sync and poll progress |
+| `GET /sources` | Per-source status from `source_sync_history` |
+| `GET /public/matches`, `/public/summary`, `/public/listings`, `/jobs`, `/analytics/skills` | Kept for the legacy Streamlit client |
 
-## API access and data handling
+`CAREERPILOT_DEMO_MODE=true` (or `CAREERPILOT_READ_ONLY=true`) rejects every mutating request and
+disables the scheduler. There is no built-in fallback token: without `CAREERPILOT_ACCESS_TOKEN`
+the API answers 503.
 
-The backend's access middleware protects profile and other private API
-responses. The React app asks for the access key at sign-in, validates it with
-`/auth/check`, and retains it in memory only. Logging out clears the query
-cache and key. Render's Streamlit service uses its server-side environment
-secret instead. `CAREERPILOT_DEMO_MODE=true` blocks mutation requests; public
-read routes remain protected by the configured access check.
+## Frontend
 
-The API reads the existing `careerpilot.db` using the path resolved by
-`backend/database.py`. Do not replace, sanitize, or commit this personal-data
-database without confirming repository privacy and authorization. The Render
-free filesystem is ephemeral; SQLite changes on Render are not durable across
-restarts or deployments.
+`src/services/api` (typed client, auth context, TanStack Query hooks) · `src/pages` (dashboard,
+listings, tracking list, calendar, notifications, sources, profile, settings) ·
+`src/components/jobs` (listing card, detail drawer opened through the `?ilan=<id>` query
+parameter). The UI never recomputes eligibility; it groups positions per listing and filters.
+The access key is kept in `sessionStorage` (or `localStorage` when “keep me signed in” is ticked)
+and is re-validated with `/auth/check` on load.
 
-## Local development and checks
+## Checks
 
-Run the API from the repository root:
-
-```powershell
-python -m pip install -r requirements.txt
-$env:CAREERPILOT_DEMO_MODE = "true"
-uvicorn backend.main:app --reload
-```
-
-In another terminal:
-
-```powershell
-Set-Location frontend
-npm ci
-$env:VITE_API_URL = "http://127.0.0.1:8000"
-npm run dev
-```
-
-Backend tests: `python -m pytest -q` from the repository root.
-Frontend tests/build: `npm test` and `npm run build` from `frontend/`.
+`python -m pytest -q` (uses a temporary database) · `npm --prefix frontend test` ·
+`npm --prefix frontend run build`.
