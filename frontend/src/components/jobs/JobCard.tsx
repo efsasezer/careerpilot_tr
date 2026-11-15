@@ -1,6 +1,6 @@
 import { Bookmark, Building2, CheckCheck, MapPin } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import { CategoryBadge, DeadlineChip } from "../shared/Badges";
+import { CategoryBadge, DataStatusChip, DeadlineChip } from "../shared/Badges";
 import { formatDate, type JobGroup } from "../../utils/format";
 
 export function useOpenJob() {
@@ -25,6 +25,8 @@ export function JobCard({ group }: { group: JobGroup }) {
       <div className="job-card-top">
         <CategoryBadge category={group.category} />
         <DeadlineChip daysLeft={job.days_left} status={job.application_status} />
+        <DataStatusChip status={job.data_status} />
+        {job.cancellation_notice && job.application_status !== "İptal Edildi" && <span className="chip chip-warn">İptal duyurusu var</span>}
         {job.tracking === "saved" && <span className="chip chip-accent"><Bookmark size={13} aria-hidden /> Kaydedildi</span>}
         {job.tracking === "applied" && <span className="chip chip-accent"><CheckCheck size={13} aria-hidden /> Başvuruldu</span>}
       </div>

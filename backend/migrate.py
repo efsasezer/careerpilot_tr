@@ -59,7 +59,7 @@ def migrate():
     required_job_columns = {
         "source_name", "application_start", "announcement_date", "quota",
         "employment_type", "recruitment_method", "is_employment", "updated_at",
-        "tracking",
+        "tracking", "archived_reason", "cancellation_notice",
     }
     required_profile_columns = {
         "university", "kpss_score_type", "accepts_shifts", "yds_score", "age",
@@ -93,6 +93,8 @@ def migrate():
     add_column_if_missing(cursor, "jobs", "is_employment", "BOOLEAN", default="1")
     add_column_if_missing(cursor, "jobs", "updated_at", "DATETIME")
     add_column_if_missing(cursor, "jobs", "tracking", "TEXT", default="''")
+    add_column_if_missing(cursor, "jobs", "archived_reason", "TEXT", default="''")
+    add_column_if_missing(cursor, "jobs", "cancellation_notice", "TEXT", default="''")
 
     # --- candidate_profile tablosu ---
     add_column_if_missing(cursor, "candidate_profile", "university", "TEXT", default="''")

@@ -82,6 +82,11 @@ export interface MatchedPosition {
   kpss_min_score: number | null;
   location_match: boolean | null;
   tracking: Tracking;
+  data_status: "read" | "partial" | "listing_only";
+  review_required: boolean;
+  cancellation_notice: string;
+  basis: { document_title: string; document_url: string; table_row: number } | null;
+  written_exam_invite_count?: number | null;
   notes: string;
   first_seen: string | null;
   match: MatchDetail;
@@ -135,9 +140,12 @@ export interface Source {
   status: string;
   job_count: number;
   last_sync: string | null;
+  last_success: string | null;
   last_found: number;
   last_created: number;
   last_updated: number;
+  last_unchanged: number;
+  failed_items: Array<{ job_id: number; title: string; url: string }>;
   last_detail_failed: number;
   pages_checked: number;
   last_error: string | null;
@@ -192,5 +200,6 @@ export interface Health {
   version: string;
   demo_mode: boolean;
   read_only: boolean;
+  auth_required: boolean;
   auto_sync_hours: number;
 }

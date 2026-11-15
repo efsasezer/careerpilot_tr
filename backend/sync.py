@@ -87,7 +87,8 @@ def application_window_from_text(text: str) -> tuple[date | None, date | None]:
 
 def organization_key(value: str) -> str:
     """Farklı kaynaklardaki kurum adlarını karşılaştırmak için sadeleştirir."""
-    text = re.sub(r"[^a-z0-9]+", " ", normalize_text(value))
+    text = re.sub(r"\([^)]*\)", " ", normalize_text(value))  # "(YÖK)" gibi kısaltmalar
+    text = re.sub(r"[^a-z0-9]+", " ", text)
     text = re.sub(r"\b(?:t c|tc|a s|as|tbmm|cumhurbaskanligi|genel mudurlugu|baskanligi|baskanligina|rektorlugu|mudurlugu|ili|ilcesi)\b", " ", text)
     text = re.sub(r"\bbelediye(?:si|sine)?\b", "belediye", text)
     words = text.split()
@@ -111,11 +112,11 @@ def _is_employment(title: str) -> bool:
 def _find_job(db: Session, source_name: str, source_listing: SourceListing | None, item: dict, user_url: str) -> Job | None:
     if source_listing is not None and source_listing.job_id:
         job = db.get(Job, source_listing.job_id)
-        if job is not None:
+        if job is not None and not job.archived_reason:
             return job
     detail_url = str(item.get("detail_url") or "")
     for url in dict.fromkeys(filter(None, (detail_url, user_url if user_url != item.get("source_url") else ""))):
-        job = db.scalar(select(Job).where(Job.source_url == url).limit(1))
+        job = db.scalar(select(Job).where(Job.source_url == url, Job.archived_reason == "").limit(1))
         if job is not None:
             return job
     # Detay bağlantısı kalıcı olmayan kaynaklarda (SBB) kurum + başlık ile eşleştir.
@@ -123,7 +124,9 @@ def _find_job(db: Session, source_name: str, source_listing: SourceListing | Non
     target = re.sub(r"[^a-z0-9]+", " ", target).strip()
     if not target:
         return None
-    for candidate in db.scalars(select(Job).where(Job.sector == "public", Job.source_name == source_name)).all():
+    for candidate in db.scalars(select(Job).where(
+        Job.sector == "public", Job.source_name == source_name, Job.archived_reason == "",
+    )).all():
         key = re.sub(r"[^a-z0-9]+", " ", normalize_text(f"{candidate.organization} {candidate.title}")).strip()
         if key == target and candidate.application_deadline == parse_turkish_date(item.get("application_end_date")):
             return candidate
@@ -253,24 +256,44 @@ def _role_words(title: str) -> set[str]:
 
 
 def _mark_cancelled(db: Session, source_name: str, item: dict) -> int:
-    """İptal duyurusu geldiğinde aynı kurumun aynı türdeki açık ilanlarını (tüm kaynaklarda) işaretler."""
+    """İptal duyurusunu ilgili ilana uygular.
+
+    Yalnızca duyuru hangi alımı iptal ettiğini açıkça söylüyorsa (ör. "memur alımı iptal ilanı")
+    ve kurumun o türde her kaynakta tek ilanı varsa ilan "İptal edildi" olur. Aksi hâlde hiçbir
+    ilan iptal sayılmaz; kurumun açık ilanlarına "iptal duyurusu var, doğrulayın" notu düşülür.
+    """
     key = organization_key(str(item.get("institution") or ""))
     if not key:
         return 0
-    roles = _role_words(item.get("title") or "")
-    count = 0
-    for job in db.scalars(select(Job).where(Job.sector == "public", Job.status != "İptal edildi")).all():
-        if organization_key(job.organization) != key:
-            continue
-        if roles and roles != _role_words(job.title):
-            continue
-        announced = parse_turkish_date(item.get("announcement_date"))
-        if announced and job.announcement_date and job.announcement_date > announced:
-            continue  # iptalden sonra yayımlanan yeni ilan
-        job.status = "İptal edildi"
-        job.updated_at = datetime.now()
-        count += 1
-    return count
+    title = str(item.get("title") or "")
+    normalized = normalize_text(title)
+    roles = _role_words(title)
+    partial = bool(re.search(r"\d", normalized)) or "kadro iptal" in normalized or "kismi" in normalized
+    announced = parse_turkish_date(item.get("announcement_date"))
+    candidates = [
+        job for job in db.scalars(select(Job).where(
+            Job.sector == "public", Job.status != "İptal edildi", Job.archived_reason == "",
+        )).all()
+        if organization_key(job.organization) == key
+        and "iptal ilan" not in normalize_text(job.title)
+        and not (announced and job.announcement_date and job.announcement_date > announced)
+    ]
+    matching = [job for job in candidates if roles and roles == _role_words(job.title)]
+    per_source: dict[str, int] = {}
+    for job in matching:
+        per_source[job.source_name] = per_source.get(job.source_name, 0) + 1
+    if matching and not partial and all(count == 1 for count in per_source.values()):
+        for job in matching:
+            job.status = "İptal edildi"
+            job.cancellation_notice = f"{source_name}: {title}"[:400]
+            job.updated_at = datetime.now()
+        return len(matching)
+    for job in candidates:
+        notice = f"{source_name}: {title}"[:400]
+        if job.cancellation_notice != notice:
+            job.cancellation_notice = notice
+            job.updated_at = datetime.now()
+    return 0
 
 
 def sync_source(db: Session, source_key: str, source, *, delay: float | None = None, on_progress=None) -> dict:
@@ -287,6 +310,17 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         listings = source.fetch_listings()
         report["pages_checked"] = getattr(source, "pages_checked", 0)
         report["found"] = len(listings)
+        previous_found = db.scalar(
+            select(SourceSyncHistory.found).where(
+                SourceSyncHistory.source_key == source_key, SourceSyncHistory.status.in_(("ok", "partial")),
+            ).order_by(SourceSyncHistory.checked_at.desc()).limit(1)
+        ) or 0
+        if not listings and previous_found:
+            # Önceki taramada ilan varken sıfır sonuç, sessizce "başarılı" sayılmaz.
+            report["empty_warning"] = (
+                f"Önceki taramada {previous_found} ilan bulunmuştu, bu taramada hiç ilan bulunamadı. "
+                "Kaynakta gerçekten ilan olmayabilir ya da sayfa yapısı değişmiş olabilir; mevcut kayıtlar korunuyor."
+            )
 
         cancellations: list[dict] = []
         for index, item in enumerate(listings):
@@ -297,7 +331,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
             if not detail_url or not external or not str(item.get("title") or "").strip():
                 report["detail_failed"] += 1
                 continue
-            if item.get("is_cancellation"):
+            if item.get("is_cancellation") or "iptal ilan" in normalize_text(str(item.get("title"))):
                 cancellations.append(item)
                 continue
 
@@ -371,14 +405,21 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         for item in cancellations:
             report["cancelled"] += _mark_cancelled(db, source_name, item)
         db.commit()
-        report["status"] = "partial" if report["detail_failed"] else "ok"
+        report["status"] = (
+            "warning" if report.get("empty_warning") else "partial" if report["detail_failed"] else "ok"
+        )
     except Exception as error:
         db.rollback()
         report["status"] = "error"
         report["error"] = str(error)[:500]
         logger.warning("Source %s failed: %s", source_key, error)
 
-    summary_error = report["error"] or "; ".join(
+    finally:
+        close = getattr(source, "close", None)
+        if callable(close):
+            close()
+
+    summary_error = report["error"] or report.get("empty_warning") or "; ".join(
         f"{item['title'][:60]}: {item['error']}" for item in report["detail_errors"][:5]
     )
     db.add(SourceSyncHistory(
@@ -442,45 +483,33 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
 
 
 def cleanup_legacy_rows(db: Session) -> dict:
-    """Eski sürümlerden kalan ilan olmayan kayıtları ve aynı kaynaktaki kopyaları temizler."""
-    from .models import DocumentPosition, Notification
+    """Eski sürümlerden kalan ilan olmayan kayıtları ve aynı kaynaktaki kopyaları arşivler.
+
+    Hiçbir kayıt silinmez: `archived_reason` doldurulur; kayıt havuzda kalır ama değerlendirilmez.
+    """
     from .sources.yerel_yonetimler import parse_announcement_title
 
-    def remove(job: Job, keep: Job | None = None) -> None:
-        for listing in db.scalars(select(SourceListing).where(SourceListing.job_id == job.id)).all():
-            if keep is not None:
-                listing.job_id = keep.id
-            else:
-                db.delete(listing)
-        for document in db.scalars(select(JobDocument).where(JobDocument.job_id == job.id)).all():
-            for row in db.scalars(select(DocumentPosition).where(DocumentPosition.document_id == document.id)).all():
-                db.delete(row)
-            db.delete(document)
-        for scan in db.scalars(select(JobDocumentScan).where(JobDocumentScan.job_id == job.id)).all():
-            db.delete(scan)
-        for notification in db.scalars(select(Notification).where(Notification.job_id == job.id)).all():
-            db.delete(notification)
-        if keep is not None and job.tracking and not keep.tracking:
-            keep.tracking = job.tracking
-        db.delete(job)
-
-    removed = merged = 0
-    jobs = list(db.scalars(select(Job).where(Job.sector == "public")).all())
-    survivors = []
-    for job in jobs:
-        parsed = parse_announcement_title(job.title)
-        if job.source_name == "Yerel Yönetimler Genel Müdürlüğü" and (not parsed["is_recruitment"] or parsed["is_cancellation"]):
-            remove(job)
-            removed += 1
-        else:
-            survivors.append(job)
+    archived = 0
+    jobs = list(db.scalars(select(Job).where(Job.sector == "public", Job.archived_reason == "")).all())
     groups: dict[tuple, list[Job]] = {}
-    for job in survivors:
+    for job in jobs:
         if job.source_name in ("Manuel Giriş", "Toplu Yükleme"):
             continue
+        if "iptal ilan" in normalize_text(job.title) and job.source_name != "Yerel Yönetimler Genel Müdürlüğü":
+            job.archived_reason = "İptal duyurusu (ilan değil)"
+            archived += 1
+            continue
+        if job.source_name == "Yerel Yönetimler Genel Müdürlüğü":
+            parsed = parse_announcement_title(job.title)
+            if parsed["is_cancellation"]:
+                job.archived_reason = "İptal duyurusu (ilan değil)"
+            elif not parsed["is_recruitment"]:
+                job.archived_reason = "İlan değil: kaynak sitesinin bilgi sayfası"
+            if job.archived_reason:
+                archived += 1
+                continue
         if job.is_employment != _is_employment(job.title):
             job.is_employment = _is_employment(job.title)
-            db.flush()
         title_key = re.sub(r"[^a-z0-9]+", " ", normalize_text(job.title)).strip()
         groups.setdefault((job.source_name, organization_key(job.organization), title_key, job.application_deadline), []).append(job)
     for members in groups.values():
@@ -488,11 +517,18 @@ def cleanup_legacy_rows(db: Session) -> dict:
             continue
         keep = max(members, key=lambda job: (len(job.description or ""), -job.id))
         for job in members:
-            if job.id != keep.id:
-                remove(job, keep)
-                merged += 1
+            if job.id == keep.id:
+                continue
+            job.archived_reason = f"Aynı kaynaktaki kopya kayıt (asıl kayıt #{keep.id})"
+            for listing in db.scalars(select(SourceListing).where(SourceListing.job_id == job.id)).all():
+                listing.job_id = keep.id
+            if job.tracking and not keep.tracking:
+                keep.tracking = job.tracking
+            if job.notes and not keep.notes:
+                keep.notes = job.notes
+            archived += 1
     db.commit()
-    return {"removed": removed, "merged": merged}
+    return {"archived": archived}
 
 
 class SyncManager:

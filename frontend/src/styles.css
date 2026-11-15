@@ -98,6 +98,14 @@ fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .chip-muted { color: var(--ink-3); }
 .chip-urgent { color: var(--bad); background: var(--bad-soft); }
 .chip-accent { color: var(--accent-strong); background: var(--accent-soft); }
+.chip-warn { color: var(--warn); background: var(--warn-soft); }
+.drawer-notice { margin: 14px 0 0; }
+.hint a { color: var(--accent); text-decoration: underline; }
+.failed-items { font-size: .88rem; color: var(--ink-2); }
+.failed-items summary { cursor: pointer; font-weight: 550; }
+.failed-items ul { display: grid; gap: 4px; margin-top: 8px; }
+.link-button { padding: 0; color: var(--accent); background: none; border: 0; text-align: left; }
+.link-button:hover { text-decoration: underline; }
 .status-met { color: var(--ok); }
 .status-not_met { color: var(--bad); }
 .status-unknown { color: var(--warn); }

@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { Bookmark, CheckCheck, ExternalLink, EyeOff, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import { CategoryBadge, DeadlineChip, StatusDot } from "../shared/Badges";
+import { CategoryBadge, DataStatusChip, DeadlineChip, StatusDot } from "../shared/Badges";
 import { QueryState } from "../shared/QueryState";
 import { useHealth, useJobDetail, useSetTracking } from "../../services/api/hooks";
 import type { JobDetail, MatchedPosition, Tracking } from "../../types/api";
 import { formatDate } from "../../utils/format";
 
+const OPTIONAL_REQUIREMENTS: Array<[string, string]> = [
+  ["Yaş", "yaş sınırı"], ["YDS", "yabancı dil puanı"], ["Deneyim", "mesleki deneyim"],
+  ["Sürücü belgesi", "sürücü belgesi"], ["Sertifika", "sertifika"], ["Vardiya", "vardiyalı çalışma"],
+];
 const ORDER = { UYGUN: 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2 } as const;
 
 export function JobDrawer() {
@@ -69,7 +73,17 @@ function DrawerBody({ job }: { job: JobDetail }) {
       <div className="drawer-chips">
         <CategoryBadge category={selected.match.category} />
         <DeadlineChip daysLeft={selected.days_left} status={selected.application_status} />
+        <DataStatusChip status={selected.data_status} always />
+        {selected.review_required && <span className="chip chip-warn">İnceleme gerekli</span>}
       </div>
+
+      {selected.cancellation_notice && (
+        <p className="notice notice-warn drawer-notice">
+          {selected.application_status === "İptal Edildi"
+            ? `Bu ilan iptal edildi (${selected.cancellation_notice}).`
+            : `Bu kurum bir iptal duyurusu yayımladı (${selected.cancellation_notice}). Hangi alımı kapsadığı otomatik belirlenemedi; ilanın geçerli olup olmadığını resmî kaynaktan doğrulayın.`}
+        </p>
+      )}
 
       <div className="drawer-actions">
         <button className={`button ${current === "saved" ? "button-active" : ""}`} disabled={readOnly} onClick={() => setTracking("saved")}>
@@ -156,6 +170,10 @@ function PositionDetail({ position, showTitle }: { position: MatchedPosition; sh
     ["Alım yöntemi", position.recruitment_method === "Kaynakta belirtilmedi" ? null : position.recruitment_method],
     ["İstihdam türü", position.employment_type === "Kaynakta belirtilmedi" ? null : position.employment_type],
   ];
+  const named = new Set(position.match.requirements.map((item) => item.name));
+  const notRequired = position.data_status === "listing_only" || position.match.kind === "academic"
+    ? []
+    : OPTIONAL_REQUIREMENTS.filter(([name]) => !named.has(name)).map(([, label]) => label);
   return (
     <>
       <section className="drawer-section">
@@ -168,6 +186,19 @@ function PositionDetail({ position, showTitle }: { position: MatchedPosition; sh
             </li>
           ))}
         </ul>
+        {notRequired.length > 0 && (
+          <p className="hint">İlan metninde aranmıyor: {notRequired.join(", ")}.</p>
+        )}
+        {position.basis && (
+          <p className="hint">
+            Dayanak: <a href={position.basis.document_url} target="_blank" rel="noreferrer">{position.basis.document_title}</a>, kadro tablosu {position.basis.table_row}. satır.
+          </p>
+        )}
+        {position.match.kpss.status === "met" && (
+          <p className="hint">
+            Taban puanı karşılamak yalnızca başvuru şartıdır; sınava çağrılma{position.written_exam_invite_count ? ` (kontenjanın ${position.written_exam_invite_count} katı aday)` : ""} ve yerleşme ayrıca puan sıralamasına bağlıdır.
+          </p>
+        )}
         {position.match.general_conditions.length > 0 && (
           <p className="hint">Genel şartlar: {position.match.general_conditions.join(", ")}.</p>
         )}

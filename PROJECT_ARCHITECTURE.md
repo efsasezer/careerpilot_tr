@@ -7,7 +7,7 @@ Browser (React + TypeScript, Vite)
                                ├── eligibility.py   requirement extraction + per-requirement verdicts
                                ├── notifications.py in-app records, e-mail / Telegram digests
                                ├── sync.py          source sync, background runner, scheduler
-                               │     └── sources/*  SBB, Kariyer Kapısı, İŞKUR, Yerel Yönetimler
+                               │     └── sources/*  SBB, Kariyer Kapısı, İŞKUR, Yerel Yönetimler, İlan.gov.tr
                                ├── documents.py     PDF / DOCX / HTML text + staff-table parsing
                                └── SQLAlchemy ──> SQLite (careerpilot.db)
 ```
@@ -42,8 +42,9 @@ Browser (React + TypeScript, Vite)
 | `GET /public/matches`, `/public/summary`, `/public/listings`, `/jobs`, `/analytics/skills` | Kept for the legacy Streamlit client |
 
 `CAREERPILOT_DEMO_MODE=true` (or `CAREERPILOT_READ_ONLY=true`) rejects every mutating request and
-disables the scheduler. There is no built-in fallback token: without `CAREERPILOT_ACCESS_TOKEN`
-the API answers 503.
+disables the scheduler. There is no built-in fallback token. Without `CAREERPILOT_ACCESS_TOKEN` only direct loopback
+requests (no proxy headers, not on Render) are served; everything else gets 503.
+Rows are never deleted: non-listings and same-source duplicates get `jobs.archived_reason`.
 
 ## Frontend
 

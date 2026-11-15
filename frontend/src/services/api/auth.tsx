@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiRequest } from "./client";
+import { apiRequest, getApiUrl } from "./client";
 
 interface AuthContextValue {
   token: string | null;
@@ -9,6 +9,7 @@ interface AuthContextValue {
 }
 
 const STORAGE_KEY = "careerpilot.accessKey";
+const LOCAL_TOKEN = "yerel";
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 function readStoredToken(): string | null {
@@ -30,16 +31,32 @@ function clearStoredToken() {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
-  const [isChecking, setIsChecking] = useState(() => Boolean(readStoredToken()));
+  const [isChecking, setIsChecking] = useState(true);
 
   // Sayfa yenilendiğinde saklanan anahtarı sunucuda doğrulayarak oturumu geri yükle.
   useEffect(() => {
-    const stored = readStoredToken();
-    if (!stored) return;
-    apiRequest("/auth/check", stored)
-      .then(() => setToken(stored))
-      .catch(clearStoredToken)
-      .finally(() => setIsChecking(false));
+    let cancelled = false;
+    (async () => {
+      const stored = readStoredToken();
+      try {
+        if (stored) {
+          await apiRequest("/auth/check", stored);
+          if (!cancelled) setToken(stored);
+          return;
+        }
+        // Yerel geliştirmede sunucu anahtar istemiyorsa giriş ekranı atlanır.
+        const health = await fetch(`${getApiUrl()}/health`).then((response) => response.json());
+        if (!cancelled && health.auth_required === false) {
+          await apiRequest("/auth/check", LOCAL_TOKEN);
+          if (!cancelled) setToken(LOCAL_TOKEN);
+        }
+      } catch {
+        if (stored) clearStoredToken();
+      } finally {
+        if (!cancelled) setIsChecking(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const signIn = useCallback(async (value: string, remember: boolean) => {
