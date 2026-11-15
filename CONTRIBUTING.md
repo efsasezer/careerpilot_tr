@@ -26,13 +26,12 @@ npm run build
 
 Do not change API response schemas or reimplement the backend eligibility
 engine in the frontend without an explicit product decision. Keep private
-credentials out of source, `.env.example`, Vite variables, commits, and
-browser storage. The React app accepts its access key in memory; the legacy
-Streamlit service reads its key from the server environment.
+credentials out of source, `.env.example`, Vite variables and commits.
+The React app asks for the access key at sign-in and keeps it in
+`sessionStorage` (or `localStorage` when the user opts in).
 
 ## Render
 
 All current services are in the root `render.yaml`. Keep their service names
-distinct and preserve the existing API and Streamlit entries when changing the
-React static-site definition. `autoDeploy` is disabled; validate the Blueprint
+distinct (`careerpilot-tr-api`, `careerpilot-tr-web`). `autoDeploy` is disabled; validate the Blueprint
 before applying changes in Render.

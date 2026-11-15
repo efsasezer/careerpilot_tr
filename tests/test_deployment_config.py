@@ -19,37 +19,17 @@ def test_render_uses_default_database_without_a_persistent_disk():
     assert "\n    disk:" not in config
 
 
-def test_render_defines_separate_free_frontend_for_existing_api():
+def test_render_defines_api_and_react_static_site_only():
     config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
 
-    assert config.count("  - type: web") == 3
+    assert config.count("  - type: web") == 2
     assert config.count("    name: careerpilot-tr-api\n    runtime: python") == 1
-    assert config.count("    name: careerpilot-tr-frontend\n    runtime: python") == 1
-    assert config.count("    plan: free") == 2
-    assert config.count("CAREERPILOT_ACCESS_TOKEN") == 3
-    assert "startCommand: streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true" in config
-    assert "healthCheckPath: /_stcore/health" in config
-    assert "      - key: API_URL\n        value: https://careerpilot-tr-api.onrender.com" in config
-    assert "      - key: CAREERPILOT_DEMO_MODE\n        value: \"true\"" in config
-    assert (
-        "      - key: CAREERPILOT_ACCESS_TOKEN\n"
-        "        fromService:\n"
-        "          name: careerpilot-tr-api\n"
-        "          type: web\n"
-        "          envVarKey: CAREERPILOT_ACCESS_TOKEN"
-    ) in config
-    assert (
-        "      - key: CAREERPILOT_ACCESS_TOKEN\n"
-        "        generateValue: true"
-    ) in config
-
-
-def test_render_adds_react_static_site_without_removing_streamlit():
-    config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
-
-    assert config.count("  - type: web") == 3
-    assert "    name: careerpilot-tr-frontend\n    runtime: python" in config
     assert "    name: careerpilot-tr-web\n    runtime: static" in config
+    assert config.count("    plan: free") == 1
+    # Erişim anahtarı yalnızca API servisinde durur; statik siteye aktarılmaz.
+    assert config.count("CAREERPILOT_ACCESS_TOKEN") == 1
+    assert "      - key: CAREERPILOT_ACCESS_TOKEN\n        generateValue: true" in config
+    assert "streamlit" not in config.casefold()
     assert "    rootDir: frontend" in config
     assert "    buildCommand: npm ci && npm run build" in config
     assert "    staticPublishPath: dist" in config
@@ -57,13 +37,13 @@ def test_render_adds_react_static_site_without_removing_streamlit():
     assert "      - type: rewrite\n        source: /*\n        destination: /index.html" in config
 
 
-def test_frontend_uses_server_token_without_requesting_visitor_credentials():
-    frontend = (Path(__file__).resolve().parents[1] / "frontend" / "app.py").read_text(encoding="utf-8")
+def test_streamlit_client_and_its_dependencies_are_gone():
+    root = Path(__file__).resolve().parents[1]
+    requirements = (root / "requirements.txt").read_text(encoding="utf-8").casefold()
 
-    assert 'os.getenv("CAREERPILOT_ACCESS_TOKEN")' in frontend
-    assert 'st.session_state.get("careerpilot_access_token")' not in frontend
-    assert "Özel erişim anahtarı" not in frontend
-    assert 'key="careerpilot_access_token"' not in frontend
+    assert not (root / "frontend" / "app.py").exists()
+    assert not (root / "legacy").exists()
+    assert "streamlit" not in requirements and "pandas" not in requirements
 
 
 def test_migration_uses_configured_render_sqlite_path(monkeypatch):

@@ -117,8 +117,8 @@ Backend testleri geçici bir veritabanı kullanır; `careerpilot.db` dosyasına 
 
 ## Yayın (Render)
 
-`render.yaml` üç servis tanımlar: FastAPI (`careerpilot-tr-api`), React statik sitesi
-(`careerpilot-tr-web`) ve eski Streamlit arayüzü. Blueprint API'yi
+`render.yaml` iki servis tanımlar: FastAPI (`careerpilot-tr-api`) ve React statik sitesi
+(`careerpilot-tr-web`). Blueprint API'yi
 `CAREERPILOT_DEMO_MODE=true` ile **salt okunur** yayımlar: depodaki `careerpilot.db`
 gösterilir; tarama, profil düzenleme ve bildirim gönderimi kapalıdır (Render'ın ücretsiz
 dosya sistemi kalıcı değildir). Tarama ve bildirimlerin çalıştığı bir yayın için kalıcı
@@ -141,5 +141,4 @@ backend/
   sources/          Kaynak bağdaştırıcıları (sbb, iskur, yerel_yonetimler, kariyer_kapisi)
 frontend/src/       React + TypeScript arayüzü (Vite)
 tests/              pytest testleri
-legacy/, frontend/app.py   Eski Streamlit arayüzü (bakımı yapılmıyor)
 ```
