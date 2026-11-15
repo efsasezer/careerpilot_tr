@@ -7,9 +7,13 @@ from typing import Any
 import unicodedata
 from urllib.parse import urlsplit
 
+import requests
+
 from ..eligibility import detect_recruitment_method, normalize_text
 from .base import (
+    DEFAULT_HEADERS,
     BaseJobSource,
+    SourceFetchError,
     absolute_url,
     content_hash,
     external_id,
@@ -206,8 +210,13 @@ class SBBSource(BaseJobSource):
     source_name = "SBB Kamu İlanları"
     base_url = "https://kamuilan.sbb.gov.tr/"
 
+    def __init__(self) -> None:
+        # İlan detay bağlantıları oturuma bağlıdır: liste sayfasıyla aynı oturumdan
+        # ve liste sayfası referansıyla açıldığında resmî ilan PDF'i döner.
+        self._session = requests.Session()
+
     def fetch_listings(self) -> list[dict[str, Any]]:
-        final_url, html = fetch_html(self.source_name, self.base_url)
+        final_url, html = fetch_html(self.source_name, self.base_url, session=self._session)
         parser = _SBBListingParser()
         parser.feed(html)
 
@@ -238,6 +247,8 @@ class SBBSource(BaseJobSource):
                 "source_key": "sbb",
                 "source_name": self.source_name,
                 "source_url": self.base_url,
+                # Detay bağlantısı her oturumda değiştiği için kullanıcıya liste adresi gösterilir.
+                "user_url": self.base_url,
                 "detail_url": detail_url,
                 "external_id": content_hash(unique_key),
                 "title": title,
@@ -252,7 +263,6 @@ class SBBSource(BaseJobSource):
                 "recruitment_method": parsed["recruitment_method"],
                 "description_html": parsed["description"],
                 "listing_text": listing_text,
-                "listing_only": True,
                 "content_hash": content_hash(
                     institution,
                     title,
@@ -274,19 +284,42 @@ class SBBSource(BaseJobSource):
         return list(unique.values())
 
     def fetch_detail(self, url: str) -> dict[str, Any]:
-        final_url, html = fetch_html(self.source_name, url)
-        _, text = parse_html_page(html)
+        try:
+            response = self._session.get(
+                url,
+                timeout=(8, 60),
+                headers={**DEFAULT_HEADERS, "Referer": self.base_url},
+            )
+        except requests.RequestException as error:
+            raise SourceFetchError(self.source_name, url, str(error)) from error
+        if response.status_code != 200:
+            raise SourceFetchError(self.source_name, url, "İlan belgesi alınamadı.", response.status_code)
+        body = response.content
+        content_type = response.headers.get("Content-Type", "")
+        if body.startswith(b"%PDF-") or "pdf" in content_type.casefold() or "word" in content_type.casefold():
+            detail = self.document_detail(
+                "https://kamuilan.sbb.gov.tr/ilan.pdf" if body.startswith(b"%PDF-") else url,
+                body,
+                content_type,
+                "Resmî ilan metni (SBB)",
+            )
+            detail["detail_url"] = url
+            detail["document"]["url"] = self.base_url
+            return detail
+
+        response.encoding = response.apparent_encoding or response.encoding
+        _, text = parse_html_page(response.text)
         normalized = normalize_text(text)
         if "404" in normalized and "aradiginiz sayfa bulunamadi" in normalized:
             raise RuntimeError(
-                f"SBB ilan detay sayfası bulunamadı (HTTP 200 soft-404): {final_url}"
+                "SBB ilan detayı bu oturumda açılamadı (bağlantının süresi dolmuş olabilir)."
             )
         if len(text) < 100:
-            raise RuntimeError(f"SBB ilan detayında ayrıştırılabilir metin yok: {final_url}")
+            raise RuntimeError("SBB ilan detayında ayrıştırılabilir metin yok.")
         return {
             "source_text": text,
             "content_hash": content_hash(text),
-            "detail_url": final_url,
+            "detail_url": url,
         }
 
     @staticmethod

@@ -80,7 +80,8 @@ def test_migration_skips_memory_and_non_sqlite_databases(monkeypatch):
     assert migrate.migration_database_path() is None
 
 
-def test_missing_sqlite_database_is_not_silently_created(tmp_path):
+def test_missing_sqlite_database_is_not_silently_created(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAREERPILOT_DB_AUTOCREATE", raising=False)
     missing_database = tmp_path / "missing.db"
 
     try:
@@ -97,7 +98,8 @@ def test_memory_sqlite_database_does_not_require_a_file():
     ensure_sqlite_database_file_exists("sqlite:///:memory:")
 
 
-def test_missing_sqlite_uri_database_is_not_silently_created(tmp_path):
+def test_missing_sqlite_uri_database_is_not_silently_created(tmp_path, monkeypatch):
+    monkeypatch.delenv("CAREERPILOT_DB_AUTOCREATE", raising=False)
     missing_database = tmp_path / "missing.db"
     database_url = f"sqlite:///file:{missing_database.as_posix()}?uri=true"
 

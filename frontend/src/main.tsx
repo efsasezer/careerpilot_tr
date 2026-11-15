@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { AuthProvider } from "./services/api/auth";
 import App from "./app/App";
+import "@fontsource-variable/geist";
 import "./styles.css";
 
 const queryClient = new QueryClient({

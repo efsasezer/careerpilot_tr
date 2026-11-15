@@ -4,8 +4,17 @@ from functools import lru_cache
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
+try:  # Playwright yalnızca Kariyer Kapısı taraması için gerekir; yoksa diğer kaynaklar çalışmaya devam eder.
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+except ImportError:  # pragma: no cover - isteğe bağlı bağımlılık
+    PlaywrightTimeoutError = TimeoutError
+
+    def sync_playwright():
+        raise RuntimeError(
+            "Kariyer Kapısı taraması için Playwright gerekli: "
+            "`pip install playwright && playwright install chromium` çalıştırın."
+        )
 
 
 URL = "https://kariyerkapisi.gov.tr/isealim"

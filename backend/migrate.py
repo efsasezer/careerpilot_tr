@@ -23,29 +23,26 @@ def migration_database_path() -> Path | None:
 def add_column_if_missing(cursor, table, column, col_type, default=None):
     cursor.execute(f"PRAGMA table_info({table})")
     existing = {row[1] for row in cursor.fetchall()}
+    if not existing:
+        return  # tablo henüz yok; create_all tam şemayla oluşturacak
     if column not in existing:
         if default is not None:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}")
         else:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
         print(f"  + {table}.{column} eklendi")
-    else:
-        print(f"  = {table}.{column} zaten mevcut")
 
 
 def migrate():
     db_path = migration_database_path()
     if db_path is None:
-        print("SQLite olmayan veya bellek içi veritabanı — migration atlanıyor.")
         return
     if not db_path.exists():
-        print(f"Veritabanı henüz yok: {db_path} — migration atlanıyor.")
         return
 
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    print(f"\nMigration başlatılıyor: {db_path}")
 
     tables = {
         row[0]
@@ -62,12 +59,13 @@ def migrate():
     required_job_columns = {
         "source_name", "application_start", "announcement_date", "quota",
         "employment_type", "recruitment_method", "is_employment", "updated_at",
+        "tracking",
     }
     required_profile_columns = {
         "university", "kpss_score_type", "accepts_shifts", "yds_score", "age",
         "driver_license", "experience_years", "has_internship",
         "internship_description", "certificates", "programming_language_evidence",
-        "notes", "updated_at",
+        "notes", "updated_at", "kpss_scores", "faculty", "department_aliases", "gender", "special_status",
     }
     schema_change_needed = (
         not {"source_listings", "source_sync_history"} <= tables
@@ -86,7 +84,6 @@ def migrate():
         print(f"Yapı değişikliğinden önce veritabanı yedeği alındı: {backup_path}")
 
     # --- jobs tablosu ---
-    print("\n[jobs tablosu]")
     add_column_if_missing(cursor, "jobs", "source_name", "TEXT", default="''")
     add_column_if_missing(cursor, "jobs", "application_start", "DATE")
     add_column_if_missing(cursor, "jobs", "announcement_date", "DATE")
@@ -95,9 +92,9 @@ def migrate():
     add_column_if_missing(cursor, "jobs", "recruitment_method", "TEXT", default="''")
     add_column_if_missing(cursor, "jobs", "is_employment", "BOOLEAN", default="1")
     add_column_if_missing(cursor, "jobs", "updated_at", "DATETIME")
+    add_column_if_missing(cursor, "jobs", "tracking", "TEXT", default="''")
 
     # --- candidate_profile tablosu ---
-    print("\n[candidate_profile tablosu]")
     add_column_if_missing(cursor, "candidate_profile", "university", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "kpss_score_type", "TEXT", default="'P3'")
     add_column_if_missing(cursor, "candidate_profile", "accepts_shifts", "BOOLEAN")
@@ -111,6 +108,11 @@ def migrate():
     add_column_if_missing(cursor, "candidate_profile", "programming_language_evidence", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "notes", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "updated_at", "DATETIME")
+    add_column_if_missing(cursor, "candidate_profile", "kpss_scores", "TEXT", default="'{}'")
+    add_column_if_missing(cursor, "candidate_profile", "faculty", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "gender", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "special_status", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "department_aliases", "TEXT", default="''")
 
     conn.commit()
     before_counts = {}
@@ -142,7 +144,6 @@ def migrate():
             "Migration doğrulaması başarısız oldu: "
             f"integrity={integrity}, before={before_counts}, after={after_counts}"
         )
-    print("\nMigration tamamlandı.")
 
 
 if __name__ == "__main__":

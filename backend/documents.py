@@ -542,6 +542,134 @@ def _pdf_table_positions(page) -> tuple[list[dict], tuple[float, float, float, f
     return positions, table.bbox
 
 
+# ----------------------------------------------------------------------------
+# Genel kadro tablosu ayrıştırıcısı (belediye ve kurum ilanlarındaki standart tablolar)
+# ----------------------------------------------------------------------------
+
+_GENERIC_COLUMNS = (
+    # (alan, başlıkta aranan kökler, başlıkta bulunmaması gerekenler)
+    ("kpss_type", ("puan tur", "puan turu", "kpss turu"), ()),
+    ("minimum", ("taban puan", "asgari puan", "en az puan", "taban"), ()),
+    ("quota", ("adedi", "adet", "sayisi", "kontenjan", "kisi sayisi"), ("sira",)),
+    ("gender", ("cinsiyet",), ()),
+    ("requirement", ("nitelik", "nitelig", "ogrenim", "mezuniyet", "aranan sart", "ozel sart", "aranilan", "bolum", "egitim durumu"), ()),
+    ("title", ("unvan", "pozisyon", "kadro adi", "meslek"), ("sayisi", "adedi", "kodu")),
+    ("city", ("gorev yeri", "atanacag", "calisacagi", "birim", "il/ilce"), ()),
+)
+
+
+def _generic_column_mapping(header_row: list[str]) -> dict[str, int] | None:
+    headers = [_normalize_header(cell or "") for cell in header_row]
+    mapping: dict[str, int] = {}
+    for field, needles, excluded in _GENERIC_COLUMNS:
+        for index, value in enumerate(headers):
+            if index in mapping.values() or not value:
+                continue
+            if any(needle in value for needle in needles) and not any(word in value for word in excluded):
+                mapping[field] = index
+                break
+    has_subject = "title" in mapping or "requirement" in mapping
+    has_measure = "quota" in mapping or "kpss_type" in mapping
+    return mapping if has_subject and has_measure else None
+
+
+def _generic_rows(matrix: list[list[str]], mapping: dict[str, int], start: int, row_offset: int) -> list[dict]:
+    def cell(row, field):
+        index = mapping.get(field)
+        if index is None or index >= len(row):
+            return ""
+        return " ".join(str(row[index] or "").split())
+
+    positions: list[dict] = []
+    for row in matrix[start:]:
+        title, requirement, quota_text = cell(row, "title"), cell(row, "requirement"), cell(row, "quota")
+        if not any((title, requirement, quota_text)):
+            continue
+        quota = re.search(r"\d+", quota_text)
+        if not quota and not title and positions and requirement:
+            # Önceki satırın nitelik hücresinin devamı
+            positions[-1]["education_requirement"] += " " + requirement
+            positions[-1]["requirements_text"] += " " + requirement
+            continue
+        if not (title or requirement) or _normalize_header(title or requirement) in ("toplam", "genel toplam"):
+            continue
+        if _generic_column_mapping([str(value or "") for value in row]):
+            continue  # sayfa başında yinelenen başlık satırı
+        requirement = re.sub(r"^(?:BÖLÜM|ÖĞRENİM|NİTELİK)\s+", "", requirement)
+        score_cell = cell(row, "kpss_type").upper().replace("KPSS", "").replace("-", "")
+        score_types = re.findall(r"P\s?(\d{1,3})\b", score_cell)
+        minimum = re.search(r"\d{2,3}(?:[.,]\d+)?", cell(row, "minimum"))
+        gender = cell(row, "gender")
+        gender_norm = _normalize_header(gender)
+        requirement_text = requirement
+        if gender and not ("erkek" in gender_norm and "kadin" in gender_norm):
+            requirement_text = f"{requirement} Cinsiyet: {gender}.".strip()
+        positions.append({
+            "row_index": row_offset + len(positions) + 1,
+            "position_title": (title or _position_title(requirement))[:250],
+            "education_requirement": requirement,
+            "quota": quota.group(0) if quota else "",
+            "kpss_score_type": "/".join(f"P{int(value)}" for value in score_types)[:50],
+            "kpss_min_score": float(minimum.group(0).replace(",", ".")) if minimum else None,
+            "city": cell(row, "city"),
+            "qualification_codes": ", ".join(sorted(set(re.findall(r"(?<!\d)[2-9]\d{3}(?!\d)", requirement)) - _YEARS)),
+            "written_exam_invite_text": "",
+            "written_exam_invite_count": None,
+            "requirements_text": requirement_text,
+            "raw_cells": {str(index): str(value or "") for index, value in enumerate(row)},
+        })
+    return positions
+
+
+_YEARS = {str(year) for year in range(1990, 2101)}
+
+
+def _generic_table_positions(matrix: list[list[str]], previous: dict | None = None, row_offset: int = 0) -> tuple[list[dict], dict | None]:
+    """Başlığı tanınan kadro tablosunu satır satır pozisyona çevirir.
+
+    `previous`: bir önceki sayfadaki tablonun sütun eşlemesi; başlıksız devam tablolarında kullanılır.
+    """
+    matrix = [[str(cell or "") for cell in row] for row in matrix if row]
+    if not matrix:
+        return [], previous
+    for header_index in range(min(2, len(matrix))):
+        mapping = _generic_column_mapping(matrix[header_index])
+        if mapping:
+            mapping = {**mapping, "_columns": len(matrix[header_index])}
+            return _generic_rows(matrix, mapping, header_index + 1, row_offset), mapping
+    if previous and len(matrix[0]) == previous.get("_columns"):
+        return _generic_rows(matrix, previous, 0, row_offset), previous
+    return [], previous
+
+
+def _pdf_generic_positions(pdf) -> tuple[list[dict], list[str]]:
+    positions: list[dict] = []
+    outside_texts: list[str] = []
+    mapping = None
+    for page in pdf.pages[:100]:
+        remaining = page
+        try:
+            tables = page.find_tables()
+        except Exception:
+            tables = []
+        for table in tables:
+            try:
+                rows, mapping = _generic_table_positions(table.extract(), mapping, len(positions))
+            except Exception:
+                rows = []
+            if rows:
+                positions.extend(rows)
+                try:
+                    remaining = remaining.outside_bbox(table.bbox)
+                except Exception:
+                    pass
+        try:
+            outside_texts.append(remaining.extract_text() or "")
+        except Exception:
+            outside_texts.append(page.extract_text() or "")
+    return positions, outside_texts
+
+
 def _parse_pdf(body: bytes) -> dict:
     try:
         with pdfplumber.open(BytesIO(body)) as pdf:
@@ -566,6 +694,10 @@ def _parse_pdf(body: bytes) -> dict:
                         )
             if len(pdf.pages) > 100:
                 raise DocumentParseError("PDF 100 sayfa sınırını aşıyor; otomatik ayrıştırma durduruldu.")
+            if not positions:
+                positions, generic_shared = _pdf_generic_positions(pdf)
+                if positions:
+                    shared_texts = generic_shared
     except DocumentParseError:
         raise
     except Exception as error:
@@ -592,6 +724,11 @@ def _positions_from_html_tables(tables: list[list[list[str]]]) -> list[dict]:
         candidates = _table_positions_from_matrix(table)
         if candidates:
             positions.extend(candidates)
+    if not positions:
+        mapping = None
+        for table in tables:
+            rows, mapping = _generic_table_positions(table, mapping, len(positions))
+            positions.extend(rows)
     return positions
 
 

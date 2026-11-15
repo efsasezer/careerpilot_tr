@@ -176,16 +176,20 @@ def test_demo_fails_closed_when_access_token_is_not_configured(monkeypatch):
 
 
 def test_read_only_api_route_functions_expose_complete_local_views():
-    from backend.database import SessionLocal
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
 
-    with SessionLocal() as db:
+    with Session(engine) as db:
+        db.add(Job(sector="public", title="Memur Alımı", organization="Örnek Kurum", source_name="SBB Kamu İlanları"))
+        db.commit()
         profile = main.get_profile(db)
         matches = main.public_matches(db)
         jobs = main.list_jobs(sector="public", category=None, db=db)
         sources = main.list_sources(db)
 
-    assert profile.kpss_p3 == 87.6
-    assert len(jobs) == 108
+    # Yeni kurulumda profil boş gelir; kimseye ait varsayılan kişisel veri yazılmaz.
+    assert profile.department == "" and profile.kpss_p3 is None and profile.kpss_scores == {}
+    assert len(jobs) == 1
     assert matches["jobs"]
     assert (
         matches["counts"]["UYGUN"]
@@ -193,7 +197,8 @@ def test_read_only_api_route_functions_expose_complete_local_views():
         + matches["counts"]["UYGUN DEĞİL"]
         == matches["counts"]["total"]
     )
-    assert sources
+    assert [source["name"] for source in sources][0] == "SBB Kamu İlanları"
+    assert sources[0]["job_count"] == 1
 
 
 def test_demo_api_access_control_and_read_only_http_methods(monkeypatch):
