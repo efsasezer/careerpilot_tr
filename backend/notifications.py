@@ -6,6 +6,7 @@ from datetime import datetime
 from email.message import EmailMessage
 import json
 import logging
+import os
 import smtplib
 
 import requests
@@ -23,13 +24,23 @@ CATEGORY_LABELS = {"UYGUN": "Uygun ilan", "POTANSİYEL OLARAK UYGUN": "Doğrulan
 
 
 def load_settings(db: Session) -> NotificationSettings:
+    settings = NotificationSettings()
     row = db.get(AppSetting, SETTINGS_KEY)
     if row and row.value:
         try:
-            return NotificationSettings(**json.loads(row.value))
+            settings = NotificationSettings(**json.loads(row.value))
         except (ValueError, TypeError):
             logger.warning("Stored notification settings are invalid; using defaults")
-    return NotificationSettings()
+    # Zamanlanmış (arayüzsüz) çalıştırmalarda alıcılar ortam değişkeninden verilebilir;
+    # böylece e-posta adresi ya da sohbet kimliği veritabanına ve depoya yazılmaz.
+    email_to = os.getenv("CAREERPILOT_NOTIFY_EMAIL_TO", "").strip()
+    chat_id = os.getenv("CAREERPILOT_NOTIFY_TELEGRAM_CHAT_ID", "").strip()
+    updates = {}
+    if email_to:
+        updates.update(email_enabled=True, email_to=email_to)
+    if chat_id:
+        updates.update(telegram_enabled=True, telegram_chat_id=chat_id)
+    return settings.model_copy(update=updates) if updates else settings
 
 
 def save_settings(db: Session, settings: NotificationSettings) -> NotificationSettings:
@@ -182,6 +193,8 @@ def send_telegram(chat_id: str, text: str) -> None:
 def send_to_channels(settings: NotificationSettings, subject: str, body: str) -> dict:
     """Etkin kanallara gönderir; kanal başına sonucu döndürür."""
     results = {}
+    if config.env_flag("CAREERPILOT_NOTIFY_DISABLED"):
+        return {"skipped": "gönderim kapalı (deneme çalıştırması)"}
     if settings.email_enabled and settings.email_to:
         try:
             send_email(settings.email_to, subject, body)
@@ -207,7 +220,7 @@ def deliver_pending(db: Session, settings: NotificationSettings | None = None) -
     subject, body = _digest(pending)
     results = send_to_channels(settings, subject, body)
     # Bir kanal hata verdiyse sonraki taramada yeniden denenir.
-    if all(value == "ok" for value in results.values()):
+    if "skipped" not in results and all(value == "ok" for value in results.values()):
         now = datetime.now()
         for item in pending:
             item.delivered_at = now

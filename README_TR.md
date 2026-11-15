@@ -75,6 +75,40 @@ puanlarınızı girin → **Kaynaklar › Şimdi tara** → **İlanlar**.
 Ayarlar sayfasındaki **Test bildirimi gönder** düğmesi kanalı dener. Bir kanal hata
 verirse bekleyen bildirimler sonraki taramada yeniden gönderilir.
 
+## Otomatik günlük tarama (GitHub Actions)
+
+`.github/workflows/gunluk-tarama.yml` her gün 08:30 ve 17:30'da (Türkiye saati) bütün
+kaynakları tarar, `careerpilot.db` dosyasını günceller, yeni eşleşmeler ve yaklaşan son
+başvurular için bildirim gönderir. Bilgisayarınızın açık olması gerekmez.
+
+Kurulum (depo sahibi, bir kez): GitHub'da **Settings → Secrets and variables → Actions →
+New repository secret** ile aşağıdakilerden kullanacaklarınızı ekleyin.
+
+| Gizli değer | Ne için |
+|---|---|
+| `CAREERPILOT_TELEGRAM_BOT_TOKEN` | Telegram botunun anahtarı (@BotFather) |
+| `CAREERPILOT_NOTIFY_TELEGRAM_CHAT_ID` | Bildirimin gideceği sohbet kimliği |
+| `CAREERPILOT_SMTP_HOST`, `CAREERPILOT_SMTP_PORT`, `CAREERPILOT_SMTP_USER`, `CAREERPILOT_SMTP_PASSWORD`, `CAREERPILOT_SMTP_FROM` | E-posta gönderimi |
+| `CAREERPILOT_NOTIFY_EMAIL_TO` | Bildirimin gideceği e-posta adresi |
+| `RENDER_DEPLOY_HOOK_URL` | İsteğe bağlı: Render'da `careerpilot-tr-api` → Settings → Deploy Hook adresi. Tanımlıysa her taramadan sonra yayındaki site de güncellenir. |
+
+Hiçbiri tanımlı değilse tarama yine çalışır ve veritabanını günceller; yalnızca dışarıya
+bildirim gönderilmez. Elle çalıştırmak için **Actions → Günlük ilan taraması → Run
+workflow** (“deneme” işaretlenirse hiçbir şey kaydedilmez ve gönderilmez). Her çalıştırmanın
+özetinde kaynak bazında bulunan/yeni/okunamayan sayıları görünür.
+
+Dikkat edilecekler:
+
+- İş akışı `careerpilot.db` dosyasını `main` dalına işler. Yerelde tarama yapmadan önce
+  `git pull` alın; aynı dosyayı iki yerde değiştirirseniz Git çakışma verir (ikili dosya
+  birleştirilemez, taraflardan biri seçilir).
+- Profil, yayında düzenlenemez. Profili yerelde güncelleyip `careerpilot.db` dosyasını
+  gönderin; günlük tarama o profile göre eşleştirir.
+- GitHub zamanlanmış işleri birkaç dakika gecikebilir; 60 gün hiç etkinlik olmayan
+  depolarda zamanlama kendiliğinden durur.
+
+Aynı tarama komut satırından da çalışır: `.venv/bin/python -m backend.sync`
+
 ## Uygunluk sınıfları
 
 - **Uygun:** Metinden okunabilen bütün zorunlu şartlar profille karşılanıyor.
