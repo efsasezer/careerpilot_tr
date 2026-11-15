@@ -24,6 +24,8 @@ TRUSTED_GOVERNMENT_DOMAINS = (
     "sbb.gov.tr",
     "iskur.gov.tr",
     "csb.gov.tr",
+    "ilan.gov.tr",
+    "osym.gov.tr",
 )
 
 

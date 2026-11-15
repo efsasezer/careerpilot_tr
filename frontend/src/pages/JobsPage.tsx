@@ -20,6 +20,7 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
   const [source, setSource] = useState("");
   const [status, setStatus] = useState(tracked ? "all" : "active");
   const [onlyPreferred, setOnlyPreferred] = useState(false);
+  const [hideAcademic, setHideAcademic] = useState(false);
   const [order, setOrder] = useState<"relevance" | "deadline" | "newest">("deadline");
   const [limit, setLimit] = useState(PAGE_SIZE);
 
@@ -36,6 +37,7 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
       if (status === "upcoming" && job.application_status !== "Başvuru Başlamadı") return false;
       if (source && job.source_name !== source) return false;
       if (onlyPreferred && job.location_match === false) return false;
+      if (hideAcademic && job.match.kind === "academic") return false;
       if (term && !`${job.organization} ${job.title} ${job.position} ${job.city ?? ""} ${job.education_requirement}`.toLocaleLowerCase("tr-TR").includes(term)) return false;
       return true;
     });
@@ -43,7 +45,7 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
     const counts = Object.fromEntries(CATEGORIES.map((key) => [key, grouped.filter((group) => group.category === key).length])) as Record<MatchCategory, number>;
     const selected: JobGroup[] = category === "all" ? grouped : grouped.filter((group) => group.category === category);
     return { groups: sortGroups(selected, tracked ? "deadline" : order), counts };
-  }, [all, search, source, status, onlyPreferred, order, category, tracked]);
+  }, [all, search, source, status, onlyPreferred, hideAcademic, order, category, tracked]);
 
   function selectCategory(next: MatchCategory) {
     const updated = new URLSearchParams(params);
@@ -101,6 +103,12 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
               <option value="deadline">Son başvuru tarihi</option>
               <option value="newest">En yeni ilan</option>
             </select>
+          </label>
+        )}
+        {!tracked && (
+          <label className="check-field">
+            <input type="checkbox" checked={hideAcademic} onChange={(event) => setHideAcademic(event.target.checked)} />
+            Akademik ilanları gizle
           </label>
         )}
         {hasPreference && (

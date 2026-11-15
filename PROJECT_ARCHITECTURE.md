@@ -7,7 +7,7 @@ Browser (React + TypeScript, Vite)
                                ├── eligibility.py   requirement extraction + per-requirement verdicts
                                ├── notifications.py in-app records, e-mail / Telegram digests
                                ├── sync.py          source sync, background runner, scheduler
-                               │     └── sources/*  SBB, Kariyer Kapısı, İŞKUR, Yerel Yönetimler, İlan.gov.tr
+                               │     └── sources/*  SBB, Kariyer Kapısı, İŞKUR, Yerel Yönetimler, İlan.gov.tr, ÖSYM
                                ├── documents.py     PDF / DOCX / HTML text + staff-table parsing
                                └── SQLAlchemy ──> SQLite (careerpilot.db)
 ```
