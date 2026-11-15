@@ -12,7 +12,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import config
-from .analysis import skill_frequency
 from .database import Base, SessionLocal, engine, get_db
 from .document_sync import sync_jobs_documents
 from .eligibility import (
@@ -374,7 +373,7 @@ def matches(db: Session = Depends(get_db)):
 
 @app.get("/public/matches")
 def public_matches(db: Session = Depends(get_db)):
-    """Eski istemcilerle uyumlu, ilan metinlerini de içeren tam yanıt."""
+    """İlan metinlerini ve belge incelemesini de içeren tam yanıt."""
     return build_matches(db, full=True)
 
 
@@ -524,17 +523,6 @@ def sync_all_sources(db: Session = Depends(get_db)):
     return run_sync(db, registry=get_source_registry())
 
 
-@app.post("/sources/kariyer-kapisi/sync")
-def sync_kariyer_kapisi(db: Session = Depends(get_db)):
-    """Eski arayüzle uyumluluk: yalnızca Kariyer Kapısı kaynağını tarar."""
-    from .sync import sync_source
-
-    report = sync_source(db, "kariyer-kapisi", get_source_registry()["kariyer-kapisi"])
-    report.pop("touched_job_ids", None)
-    process_notifications(db)
-    return {**report, "created": report["imported"]}
-
-
 @app.post("/documents/sync")
 def sync_public_job_documents(db: Session = Depends(get_db)):
     jobs = list(db.scalars(select(Job).where(Job.sector == "public").order_by(Job.id)).all())
@@ -614,20 +602,3 @@ def public_listings(
         matching.append(_listing_payload(job, application_status))
     return {"total": len(matching), "items": matching[offset:offset + limit]}
 
-
-# ============================================================
-# ÖZEL SEKTÖR BECERİ ANALİZİ (eski Streamlit arayüzü)
-# ============================================================
-
-@app.get("/analytics/skills")
-def analyze_skills(category: str | None = None, db: Session = Depends(get_db)):
-    stmt = select(Job).where(Job.sector == "private")
-    if category:
-        stmt = stmt.where(Job.category == category)
-    jobs = list(db.scalars(stmt).all())
-    records = [{"title": j.title, "skills": j.skills, "description": j.description} for j in jobs]
-    return {
-        "category": category or "Tüm özel sektör ilanları",
-        "job_count": len(jobs),
-        "skills": skill_frequency(records),
-    }

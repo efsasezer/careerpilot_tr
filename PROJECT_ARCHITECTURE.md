@@ -39,7 +39,7 @@ Browser (React + TypeScript, Vite)
 | `GET/PUT /notifications/settings`, `POST /notifications/test` | Preferences and channel test |
 | `POST /sync`, `GET /sync/status` | Start a background sync and poll progress |
 | `GET /sources` | Per-source status from `source_sync_history` |
-| `GET /public/matches`, `/public/summary`, `/public/listings`, `/jobs`, `/analytics/skills` | Kept for the legacy Streamlit client |
+| `GET /public/matches`, `/public/summary`, `/public/listings`, `/jobs` | Full-text matches, summary and raw listing pool (scripts, checks) |
 
 `CAREERPILOT_DEMO_MODE=true` (or `CAREERPILOT_READ_ONLY=true`) rejects every mutating request and
 disables the scheduler. There is no built-in fallback token. Without `CAREERPILOT_ACCESS_TOKEN` only direct loopback
