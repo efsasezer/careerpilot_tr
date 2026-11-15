@@ -9,9 +9,9 @@ yeni eşleşmeler ile yaklaşan son başvurular için bildirim üretir.
 
 ## Neler yapar?
 
-- **Beş resmî kaynağı tarar:** Kariyer Kapısı, İŞKUR kamu memur alım ilanları, SBB Kamu
-  İlanları, Yerel Yönetimler Genel Müdürlüğü duyuruları ve İlan.gov.tr (Kamu Personel Alım
-  ve Sınavları).
+- **Altı resmî kaynağı tarar:** Kariyer Kapısı, İŞKUR kamu memur alım ilanları, SBB Kamu
+  İlanları, Yerel Yönetimler Genel Müdürlüğü duyuruları, İlan.gov.tr (Kamu Personel Alım
+  ve Sınavları) ve ÖSYM'nin KPSS merkezi yerleştirme (tercih) duyuruları.
 - **İlan havuzu uygunluktan bağımsızdır:** Bulunan her ilan önce kaydedilir, sonra
   değerlendirilir. Uygun olmayan, ayrıntısı okunamayan ya da henüz değerlendirilemeyen ilan
   da listede kalır; veri/belge durumu ve “inceleme gerekli” bilgisi ayrıca gösterilir.
@@ -102,7 +102,11 @@ sayılan bölümler** alanına ekleyebilirsiniz.
   kopyalar `archived_reason` ile arşivlenir; `/jobs` yanıtında görünmeye devam eder.
 - SBB ilan bağlantıları oturuma özeldir; arayüz SBB liste sayfasına yönlendirir ve okunan
   resmî metni ilan ayrıntısında gösterir.
-- ÖSYM merkezi yerleştirme (KPSS tercih kılavuzu) kadroları henüz taranmıyor.
+- ÖSYM merkezi yerleştirmede tercih dönemi duyurusu yakalanır ve bildirilir; ancak tercih
+  kılavuzundaki kadrolar tek tek ayrıştırılmaz. Kılavuz bağlantısı ilanla birlikte gösterilir.
+- Akademik kadrolar (araştırma/öğretim görevlisi) KPSS ile alınmaz. Bölümünüz aranıyorsa
+  “Doğrulanmalı” olarak gösterilir (ALES, dil ve lisansüstü şartları ilandan doğrulanmalı);
+  İlanlar sayfasındaki “Akademik ilanları gizle” seçeneğiyle listeden çıkarılabilir.
 - Uygulama tek aday profiliyle çalışır (çok kullanıcılı değildir).
 
 ## Testler

@@ -73,7 +73,7 @@ def application_window_from_text(text: str) -> tuple[date | None, date | None]:
     """İlan metnindeki "başvurular 10.11.2026 - 24.11.2026 tarihleri arasında" kalıbını okur."""
     flowed = normalize_text(reflow_text(text or ""))
     for sentence in _sentences(flowed):
-        if "basvuru" not in sentence and "muracaat" not in sentence:
+        if not any(word in sentence for word in ("basvuru", "muracaat", "tercih")):
             continue
         match = _DATE_RANGE.search(sentence)
         if not match:
@@ -315,7 +315,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
                 SourceSyncHistory.source_key == source_key, SourceSyncHistory.status.in_(("ok", "partial")),
             ).order_by(SourceSyncHistory.checked_at.desc()).limit(1)
         ) or 0
-        if not listings and previous_found:
+        if not listings and previous_found and not getattr(source, "allow_empty", False):
             # Önceki taramada ilan varken sıfır sonuç, sessizce "başarılı" sayılmaz.
             report["empty_warning"] = (
                 f"Önceki taramada {previous_found} ilan bulunmuştu, bu taramada hiç ilan bulunamadı. "

@@ -84,6 +84,8 @@ def generate_notifications(db: Session, matches: dict | None = None, settings: N
             continue  # ayrıntısı okunamayan ilanlar için "potansiyel" bildirimi gürültü olur
         if settings.only_preferred_locations and summary["location_match"] is False:
             continue
+        if summary["kind"] == "academic" and not summary["education_met"]:
+            continue  # akademik ilan yalnızca adayın bölümü açıkça aranıyorsa bildirilir
 
         positions = [
             name for name in dict.fromkeys(summary["positions"])

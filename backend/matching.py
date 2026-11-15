@@ -82,6 +82,14 @@ def decompose_job_positions(job: Job, documents: list[JobDocument], positions_by
         for document in documents
         for position in positions_by_document.get(document.id, [])
     ]
+    # Güvenlik: farklı unvanlı satırların hepsi aynı nitelik metnini taşıyorsa tablo yanlış
+    # ayrıştırılmıştır. Satırlar kullanılmaz; ilan bütün metniyle tek kayıt olarak değerlendirilir.
+    requirement_texts = {normalize_text(row.education_requirement) for _, row in rows if row.education_requirement}
+    titles = {normalize_text(row.position_title) for _, row in rows}
+    if len(rows) >= 3 and len(requirement_texts) == 1 and len(titles) > 1:
+        rows = []
+        base["table_unreliable"] = True
+
     if not rows:
         # Kadro tablosu ayrıştırılamadıysa ek belgelerin metni de değerlendirmeye katılır.
         extra = [
@@ -164,6 +172,18 @@ def _document_review(scan, documents, positions_by_document) -> dict:
     }
 
 
+_GENERIC_TITLE_STEMS = {
+    "alacak", "alimi", "alim", "ilani", "ilan", "sinavi", "sinav", "giris", "person", "sozles", "memur",
+    "yili", "baskan", "genel", "mudurl", "univer", "rektor", "bakanl", "kurumu", "kurulu", "belediy",
+    "duyuru", "icin", "uzere", "temin", "edilec", "adet", "proje", "bazli", "turkiy", "cumhur",
+}
+
+
+def _title_stems(job: Job) -> set[str]:
+    words = re.sub(r"[^a-z]+", " ", normalize_text(f"{job.title}")).split()
+    return {word[:6] for word in words if len(word) >= 5} - _GENERIC_TITLE_STEMS
+
+
 def _roles_compatible(first: set[str], second: set[str]) -> bool:
     """Bir kaynak "memur", diğeri "zabıta memuru" yazabilir; ikisi aynı ilandır."""
     if first == second:
@@ -196,7 +216,10 @@ def _duplicate_groups(jobs: list[Job]) -> tuple[set[int], dict[int, list[Job]]]:
                 same_deadline = job.application_deadline == primary.application_deadline
                 missing_deadline = job.application_deadline is None or primary.application_deadline is None
                 if (same_deadline and job.application_deadline is not None) or (
-                    missing_deadline and any(_roles_compatible(roles, _role_words(other.title)) for other in cluster)
+                    missing_deadline and any(
+                        _roles_compatible(roles, _role_words(other.title)) or _title_stems(job) & _title_stems(other)
+                        for other in cluster
+                    )
                 ):
                     cluster.append(job)
                     break
@@ -206,6 +229,29 @@ def _duplicate_groups(jobs: list[Job]) -> tuple[set[int], dict[int, list[Job]]]:
             for job in cluster[1:]:
                 hidden.add(job.id)
                 copies.setdefault(cluster[0].id, []).append(job)
+    # Aynı ilan, kaynaklarda farklı kurum adıyla yayımlanabilir (bakanlık / bağlı kurul).
+    # Başlangıç ve bitiş tarihleri aynı, başlıkları en az iki ayırt edici sözcük paylaşan,
+    # farklı kaynaklardaki kayıtlar da birleştirilir.
+    remaining = [job for job in jobs if job.id not in hidden and job.is_employment
+                 and job.application_start and job.application_deadline]
+    by_window: dict[tuple, list[Job]] = {}
+    for job in remaining:
+        by_window.setdefault((job.application_start, job.application_deadline), []).append(job)
+    for members in by_window.values():
+        if len(members) < 2:
+            continue
+        for job in sorted(members, key=lambda item: (-len(item.description or ""), item.id)):
+            if job.id in hidden:
+                continue
+            for other in members:
+                if other.id == job.id or other.id in hidden or other.id in copies:
+                    continue
+                family = [job, *copies.get(job.id, [])]
+                if any(member.source_name == other.source_name for member in family):
+                    continue
+                if len(_title_stems(job) & _title_stems(other)) >= 2:
+                    hidden.add(other.id)
+                    copies.setdefault(job.id, []).append(other)
     return hidden, copies
 
 
@@ -412,11 +458,15 @@ def job_summaries(matches: dict) -> list[dict]:
             "location_match": item["location_match"],
             "category": item["match"]["category"],
             "data_quality": item["match"]["data_quality"],
+            "kind": item["match"]["kind"],
+            "education_met": False,
             "positions": [],
         })
         if CATEGORY_ORDER[item["match"]["category"]] < CATEGORY_ORDER[summary["category"]]:
             summary["category"] = item["match"]["category"]
             summary["data_quality"] = item["match"]["data_quality"]
+        if item["match"]["education"]["status"] == "met" and item["match"]["category"] != "UYGUN DEĞİL":
+            summary["education_met"] = True
         if item["location_match"]:
             summary["location_match"] = True
         if item["match"]["category"] != "UYGUN DEĞİL":

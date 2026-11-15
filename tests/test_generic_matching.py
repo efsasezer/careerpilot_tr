@@ -75,8 +75,19 @@ def test_missing_score_type_is_reported_with_registered_types():
 
 
 def test_academic_special_group_and_gender_rows():
-    academic = classify_public_job({"title": "12 ÖĞRETİM ELEMANI ALACAK", "description": ""}, candidate())
-    assert academic["category"] == DEGIL and academic["kind"] == "academic"
+    # Akademik ilan toptan elenmez: bölüm tutuyorsa doğrulanacak şartlarıyla gösterilir.
+    generic = classify_public_job({"title": "12 ÖĞRETİM ELEMANI ALACAK", "description": ""}, candidate())
+    assert generic["category"] == POTANSIYEL and generic["kind"] == "academic"
+    assert not any(item["name"] == "KPSS" for item in generic["requirements"])
+    assistant = {"title": "Örnek Üniversitesi — Arş. Gör.", "position": "Arş. Gör.", "position_specific": True,
+                 "education_requirement": "İktisat bölümü lisans mezunu olmak. Alanında lisansüstü eğitim yapıyor olmak."}
+    matched = classify_public_job(assistant, candidate())
+    assert matched["category"] == POTANSIYEL and matched["education"]["status"] == "met"
+    assert any(item["name"] == "Akademik şartlar" for item in matched["requirements"])
+    assert classify_public_job(assistant, candidate(department="Kimya", faculty=""))["category"] == DEGIL
+    professor = {"title": "Örnek Üniversitesi — Doçent", "position": "Doçent", "position_specific": True,
+                 "education_requirement": "İktisat"}
+    assert classify_public_job(professor, candidate())["category"] == DEGIL
 
     special = {"title": "ESKİ HÜKÜMLÜ İŞÇİ ALIM İLANI", "description": "En az ilkokul mezunu olmak."}
     assert classify_public_job(special, candidate())["category"] == DEGIL
@@ -357,3 +368,89 @@ def test_ilan_gov_card_and_notice_text_parsing():
     )
     assert text == "Örnek Kurulu Başkanlığından:\nİlan gövdesi."
     assert info == {"owner": "ÖRNEK KURULU BAŞKANLIĞI", "number": "DPB845587", "city": "ANKARA", "published": "13.11.2026"}
+
+
+def test_rows_with_identical_requirements_are_treated_as_an_unreliable_table():
+    from backend.matching import decompose_job_positions
+    from backend.models import DocumentPosition, JobDocument
+
+    job = Job(id=7, title="30 MEMUR TEMİN EDİLECEKTİR", organization="Örnek Komutanlığı", description="İlan metni")
+    document = JobDocument(id=3, job_id=7, document_url="https://x.gov.tr/a.pdf", extracted_text="Bilgisayar Mühendisliği lisans programından mezun olmak.")
+    same = "Felsefe lisans programlarının birinden mezun olmak."
+    rows = [DocumentPosition(document_id=3, row_index=i, position_title=title, education_requirement=same, requirements_text=same)
+            for i, title in enumerate(("Avukat", "Mühendis (1)", "Psikolog"), 1)]
+
+    positions = decompose_job_positions(job, [document], {3: rows})
+
+    # Satırlar birbirine karışmış: hiçbiri ayrı pozisyon sayılmaz, ilan bütün metniyle değerlendirilir.
+    assert len(positions) == 1 and positions[0].get("position_specific") is not True
+    assert "Bilgisayar Mühendisliği" in positions[0]["description"]
+
+
+def test_any_program_row_in_unparsed_notice_and_higher_education_wording():
+    text = (
+        "Makine Mühendisliği lisans programından mezun olmak.\n"
+        "Herhangi bir lisans programından mezun olmak.\n"
+    )
+    engineer = candidate(department="Bilgisayar Mühendisliği", faculty="")
+    result = classify_public_job({"title": "10 Memur Alımı", "description": text}, engineer)
+    assert result["education"]["status"] == "unknown"  # elenmez; hangi kadro olduğu doğrulanır
+
+    scoped = "Hukuk Fakültesi, İletişim Fakültesi: belirtilen fakültelerin herhangi bir lisans bölümünden mezun olmak."
+    assert classify_public_job({"title": "Uzman Yardımcısı", "description": scoped}, engineer)["education"]["status"] == "not_met"
+
+    vague = "Ek-1 tablosunda belirtilen bölümlerden Yükseköğrenim mezunu olmak. Tercihen yüksek lisans mezunu olmak."
+    assert classify_public_job({"title": "Personel Alımı", "description": vague}, engineer)["education"]["status"] == "unknown"
+
+
+def test_same_notice_under_different_institution_names_is_merged():
+    with _database() as db:
+        db.add(CandidateProfile(id=1, degree="Lisans", department="İktisat", kpss_scores='{"P48": 85}'))
+        db.add(_job(organization="HAZİNE VE MALİYE BAKANLIĞI", title="10 STAJYER HAZİNE KONTROLÖRÜ ALACAK"))
+        db.add(_job(organization="HAZİNE KONTROLÖRLERİ KURULU BAŞKANLIĞI", title="Stajyer Hazine Kontrolörlüğü Giriş Sınavı İlanı",
+                    source_name="İlan.gov.tr", description="kısa"))
+        db.add(_job(organization="BAŞKA KURUM", title="5 Uzman Yardımcısı Alacak", source_name="İlan.gov.tr"))
+        db.commit()
+        items = build_matches(db, full=False)["jobs"]
+        assert len(items) == 2
+        merged = next(item for item in items if "HAZİNE" in item["organization"])
+        assert [other["source_name"] for other in merged["also_listed"]] == ["İlan.gov.tr"]
+
+
+def test_osym_source_picks_only_placement_preference_announcements(monkeypatch):
+    from backend.sources import osym
+
+    assert osym.is_placement_announcement("KPSS-2026/2: Tercih İşlemleri")
+    assert osym.is_placement_announcement("2026-EKPSS/Kura ile Yerleştirme: Tercih Kılavuzu ve Tercih İşlemleri")
+    assert not osym.is_placement_announcement("2026 KPSS Ön Lisans Sınavı: Branş Bazında Sıralamalar")
+    assert not osym.is_placement_announcement("KPSS-2026/1: Yerleştirme Sonuçları Açıklandı")
+    assert not osym.is_placement_announcement("Adres İline Göre Tercih Edilebilecek Yakın Sınav Merkezleri")
+
+    filler = "".join(f'<a href="/sayfa-{i}">Diğer duyuru {i}</a>' for i in range(25))
+    pages = {
+        "https://www.osym.gov.tr/": filler + '<a href="/kpss-2026-2-tercih-islemleri">KPSS-2026/2: Tercih İşlemleri</a>'
+                                             '<a href="/kpss-siralamalar">2026 KPSS Lisans: Branş Bazında Sıralamalar</a>',
+        "https://www.osym.gov.tr/kpss-2026-2-tercih-islemleri": (
+            "<p>Tercih işlemleri 01.12.2026 - 10.12.2026 tarihleri arasında alınacaktır. " + "Adaylar tercihlerini kılavuza göre yapacaktır. " * 3 + "</p>"
+            '<a href="https://dokuman.osym.gov.tr/web/2026/kpss-2026-2-tercih-kilavuzu.pdf">Tercih Kılavuzu</a>'
+        ),
+    }
+    source = osym.OsymSource()
+    monkeypatch.setattr(source, "_get", lambda url: (url, pages[url]))
+
+    listings = source.fetch_listings()
+    assert [item["title"] for item in listings] == ["KPSS-2026/2: Tercih İşlemleri"]
+    detail = source.fetch_detail(listings[0]["detail_url"])
+    assert detail["unread_attachments"][0]["url"].endswith("tercih-kilavuzu.pdf")
+
+    monkeypatch.setattr(main, "get_source_registry", lambda: {"osym": source})
+    with _database() as db:
+        result = main.sync_all_sources(db)
+        job = db.scalar(select(Job))
+        assert result["results"]["osym"]["imported"] == 1
+        assert job.application_start == date(2026, 12, 1) and job.application_deadline == date(2026, 12, 10)
+        item = build_matches(db, full=False)["jobs"][0]
+        assert item["match"]["category"] == POTANSIYEL and item["review_required"]
+        # Tercih dönemi kapanınca duyurunun kalkması uyarı sayılmaz.
+        pages["https://www.osym.gov.tr/"] = filler
+        assert main.sync_all_sources(db)["results"]["osym"]["status"] == "ok"

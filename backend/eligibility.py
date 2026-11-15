@@ -401,12 +401,12 @@ def _required_levels(text):
         levels.add(3)
     if re.search(r"ortaogretim|lise(?:\s|$|,)|lise ve dengi|lise veya dengi", text):
         levels.add(1)
-    if re.search(r"yuksek lisans(?: veya doktora)? (?:mezunu|yapmis|derecesine)", text):
-        levels.add(4)
+    if re.search(r"yuksekogrenim|yuksekogretim kurum|yuksek ogrenim", text) and not levels:
+        levels.add(2)  # herhangi bir yükseköğrenim: en az ön lisans
     return levels
 
 
-def _assess_education(candidate, evidence, codes, title="", position=""):
+def _assess_education(candidate, evidence, codes, title="", position="", position_specific=False):
     """(status, açıklama) döndürür. status: met | not_met | unknown."""
     level = degree_level(candidate.get("degree", ""))
     names = _department_names(candidate)
@@ -484,6 +484,16 @@ def _assess_education(candidate, evidence, codes, title="", position=""):
     if named:
         if not names:
             return "unknown", "İlan belirli bölümler arıyor; profilde bölüm girilmemiş."
+        if not position_specific and level is not None and re.search(
+            r"(?<!fakultelerin )(?<!fakultelerinin )(?<!belirtilen )herhangi bir "
+            + ("lisans" if level >= 3 else "on ?lisans" if level == 2 else "ortaogretim")
+            + r" (?:program|bolum)",
+            text,
+        ) and not re.search(r"(?:fakultelerin|fakultelerinin|belirtilen fakulte)[^.]{0,60}herhangi bir", text):
+            return "unknown", (
+                "İlanda belirli bölümler isteyen kadroların yanında herhangi bir programdan mezunları kabul eden "
+                "kadro da görünüyor; hangi pozisyon olduğu resmî ilandan doğrulanmalı."
+            )
         candidate_terms = {term for term in FIELD_TERMS if any(term in name for name in names)}
         if any(candidate_terms & family and set(named) <= family for family in RELATED_FIELDS):
             return "unknown", (
@@ -593,14 +603,23 @@ def classify_public_job(job, candidate):
 
     # ---- 1. Eğitim -------------------------------------------------------
     if academic:
-        education_status = "not_met"
-        education_detail = (
-            "Akademik kadro ilanı (öğretim elemanı); KPSS ile alım yapılmaz, "
-            "ALES ve yabancı dil şartları aranır."
-        )
-        add("Kapsam", education_status, education_detail)
+        # Akademik kadrolar KPSS ile değil ALES/yabancı dil ile alınır; yine de adayın bölümü
+        # aranıyorsa ilan elenmez, doğrulanacak şartlarıyla gösterilir.
+        rank_text = normalize_text(f"{position} {title}")
+        level = degree_level(candidate.get("degree", ""))
+        needs_doctorate = any(word in rank_text for word in ("ogretim uyesi", "ogr. uyesi", "profesor", "prof. dr", "docent", "doc. dr", "dr. ogr", "dr.ogr"))
+        if needs_doctorate and level is not None and level < 5:
+            education_status, education_detail = "not_met", "Öğretim üyesi kadrosu doktora gerektirir; profilinizdeki öğrenim düzeyi yeterli değil."
+        else:
+            education_status, education_detail = _assess_education(candidate, education_evidence, codes, title, position, position_specific)
+        add("Eğitim", education_status, education_detail)
+        if education_status != "not_met":
+            add("Akademik şartlar", "unknown", (
+                "Akademik kadro: KPSS aranmaz; ALES, yabancı dil ve (araştırma görevlisi için) lisansüstü öğrencilik "
+                "şartları resmî ilandan doğrulanmalı."
+            ))
     else:
-        education_status, education_detail = _assess_education(candidate, education_evidence, codes, title, position)
+        education_status, education_detail = _assess_education(candidate, education_evidence, codes, title, position, position_specific)
         if not has_detail and education_status == "unknown":
             education_detail = "İlanın ayrıntılı şartları henüz okunamadı; yalnızca liste bilgisi var."
         add("Eğitim", education_status, education_detail)

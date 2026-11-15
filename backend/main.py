@@ -168,6 +168,11 @@ SOURCES_STATUS = {
         "url": "https://www.ilan.gov.tr/ilan/kategori/44/kamu-personel-alim-ve-sinavlari",
         "description": "Basın İlan Kurumu resmî ilan portalındaki kamu personel alım ve sınav ilanları.",
     },
+    "ÖSYM": {
+        "name": "ÖSYM",
+        "url": "https://www.osym.gov.tr/",
+        "description": "KPSS merkezi yerleştirme (tercih) duyuruları. Tercih dönemi açıldığında ilan havuzuna eklenir; kılavuzdaki kadrolar kılavuzdan kontrol edilir.",
+    },
     "Yerel Yönetimler Genel Müdürlüğü": {
         "name": "Yerel Yönetimler Genel Müdürlüğü",
         "url": "https://yerelyonetimler.csb.gov.tr/duyurular",
