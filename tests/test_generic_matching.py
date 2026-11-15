@@ -236,7 +236,7 @@ def test_failed_channel_is_retried_and_hidden_jobs_are_skipped(monkeypatch):
         assert db.scalar(select(Notification)).delivered_at is None  # sonraki taramada yeniden denenir
 
 
-def test_cancellation_marks_matching_listing_in_every_source():
+def test_specific_cancellation_marks_only_the_matching_listing():
     with _database() as db:
         db.add(_job(organization="Asarcık Belediye Başkanlığı", title="9 MEMUR ALACAK"))
         db.add(_job(organization="Asarcık Belediye Başkanlığı", title="2 İTFAİYE ERİ ALACAK"))
@@ -250,3 +250,110 @@ def test_cancellation_marks_matching_listing_in_every_source():
         assert statuses["9 MEMUR ALACAK"] == "İptal edildi" and statuses["2 İTFAİYE ERİ ALACAK"] != "İptal edildi"
         cancelled = next(item for item in build_matches(db, full=False)["jobs"] if item["title"] == "9 MEMUR ALACAK")
         assert cancelled["application_status"] == "İptal Edildi" and cancelled["is_expired"] is True
+
+
+def test_vague_or_partial_cancellation_never_cancels_but_flags_for_review():
+    with _database() as db:
+        db.add(_job(organization="Örnek Üniversitesi", title="2 SÖZLEŞMELİ PERSONEL ALACAK"))
+        db.add(_job(organization="Örnek Üniversitesi", title="7 ÖĞRETİM ÜYESİ ALACAK"))
+        db.commit()
+        for title in ("İPTAL İLANI", "KADRO İPTAL İLANI", "1 ÖĞRETİM ÜYESİ İPTAL İLANI"):
+            assert _mark_cancelled(db, "SBB Kamu İlanları", {"institution": "ÖRNEK ÜNİVERSİTESİ", "title": title}) == 0
+        db.commit()
+        jobs = list(db.scalars(select(Job)).all())
+        assert all(job.status != "İptal edildi" for job in jobs)
+        assert all("İPTAL İLANI" in job.cancellation_notice for job in jobs)
+        items = build_matches(db, full=False)["jobs"]
+        assert all(item["review_required"] and item["cancellation_notice"] and not item["is_expired"] for item in items)
+
+
+def test_local_requests_work_without_token_but_remote_requests_do_not(monkeypatch):
+    import asyncio
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    monkeypatch.delenv("CAREERPILOT_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+
+    def request(client, headers=()):
+        return Request({
+            "type": "http", "http_version": "1.1", "method": "PUT", "scheme": "http", "path": "/profile",
+            "raw_path": b"/profile", "query_string": b"", "root_path": "",
+            "headers": [(name.encode(), value.encode()) for name, value in headers],
+            "client": (client, 50000), "server": ("testserver", 80),
+        })
+
+    async def call_next(_request):
+        return Response(status_code=204)
+
+    run = lambda req: asyncio.run(main.restrict_api(req, call_next)).status_code
+    assert run(request("127.0.0.1")) == 204
+    assert run(request("203.0.113.9")) == 503
+    assert run(request("127.0.0.1", [("x-forwarded-for", "203.0.113.9")])) == 503  # vekil sunucu arkasında
+    monkeypatch.setenv("RENDER", "true")
+    assert run(request("127.0.0.1")) == 503
+    monkeypatch.delenv("RENDER")
+    monkeypatch.setenv("CAREERPILOT_ACCESS_TOKEN", "secret")
+    assert run(request("127.0.0.1")) == 401  # anahtar tanımlıysa yerelde de istenir
+
+
+def test_legacy_rows_are_archived_not_deleted_and_stay_out_of_matching():
+    from backend.sync import cleanup_legacy_rows
+
+    with _database() as db:
+        db.add(_job(title="9 MEMUR ALACAK", description="uzun metin " * 40))
+        db.add(_job(title="9 MEMUR ALACAK", description="kısa", tracking="saved"))
+        db.add(_job(source_name="Yerel Yönetimler Genel Müdürlüğü", title="Personel Hizmetleri Rehberleri", organization="Yerel Yönetim"))
+        db.commit()
+        assert cleanup_legacy_rows(db) == {"archived": 2}
+        assert cleanup_legacy_rows(db) == {"archived": 0}
+        jobs = list(db.scalars(select(Job).order_by(Job.id)).all())
+        assert len(jobs) == 3  # hiçbir kayıt silinmez
+        assert jobs[0].archived_reason == "" and jobs[0].tracking == "saved"
+        assert "kopya" in jobs[1].archived_reason and "İlan değil" in jobs[2].archived_reason
+        assert build_matches(db, full=False)["counts"]["total"] == 1
+
+
+def test_zero_results_after_previous_success_is_reported_as_warning(monkeypatch):
+    class Source:
+        source_name = "Kariyer Kapısı"
+        pages_checked = 1
+        listings = [{"detail_url": "https://kariyerkapisi.gov.tr/IlanDetay?i=1", "external_id": "1", "title": "Memur Alımı", "institution": "Kurum", "content_hash": "a"}]
+
+        def fetch_listings(self):
+            return self.listings
+
+        def fetch_detail(self, _url):
+            return {"source_text": "Hukuk bölümünden mezun olmak. " * 5, "content_hash": "d"}
+
+    source = Source()
+    monkeypatch.setattr(main, "get_source_registry", lambda: {"kariyer-kapisi": source})
+    monkeypatch.setattr("backend.sync.sync_jobs_documents", lambda db, jobs: {"errors": 0})
+    with _database() as db:
+        assert main.sync_all_sources(db)["results"]["kariyer-kapisi"]["status"] == "ok"
+        source.listings = []
+        result = main.sync_all_sources(db)
+        assert result["success"] is False and result["results"]["kariyer-kapisi"]["status"] == "warning"
+        listed = next(item for item in main.list_sources(db) if item["name"] == "Kariyer Kapısı")
+        assert listed["status"] == "Uyarı" and "hiç ilan bulunamadı" in listed["last_error"]
+        assert listed["job_count"] == 1 and listed["last_success"] is not None  # mevcut kayıt korunur
+
+
+def test_ilan_gov_card_and_notice_text_parsing():
+    from backend.sources.ilan_gov import extract_notice_text, parse_card
+
+    card = parse_card(
+        "https://www.ilan.gov.tr/ilan/2290015/kamu-personel-ornek-ilan",
+        "ÖRNEK KURULU BAŞKANLIĞI\nÖrnek Kurulu Uzman Yardımcısı Alım İlanı\nDPB845587\nANKARA",
+    )
+    assert card == {"external_id": "2290015", "institution": "ÖRNEK KURULU BAŞKANLIĞI",
+                    "title": "Örnek Kurulu Uzman Yardımcısı Alım İlanı", "listing_number": "DPB845587", "city": "Ankara"}
+    assert parse_card("https://www.ilan.gov.tr/ilan/tum-ilanlar", "Tüm İlanlar") is None
+
+    text, info = extract_notice_text(
+        "Ana Sayfa\nTüm İlanlar\nİlan Metni |  \xa0 Tam Ekran\nÖrnek\xa0Kurulu Başkanlığından:\nİlan gövdesi.\n"
+        "İlan Bilgileri\nİlan Sahibi\nÖRNEK KURULU BAŞKANLIĞI \nİlan Numarası\nDPB845587\nŞehir\nANKARA\n"
+        "Resmî Gazete Yayım Tarihi\n13.11.2026\nPaylaş :"
+    )
+    assert text == "Örnek Kurulu Başkanlığından:\nİlan gövdesi."
+    assert info == {"owner": "ÖRNEK KURULU BAŞKANLIĞI", "number": "DPB845587", "city": "ANKARA", "published": "13.11.2026"}

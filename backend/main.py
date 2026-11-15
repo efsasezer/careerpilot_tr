@@ -22,7 +22,7 @@ from .eligibility import (
 )
 from .matching import build_matches, invalidate_cache
 from .migrate import migrate as run_migrations
-from .models import CandidateProfile, Job, Notification, SourceSyncHistory
+from .models import CandidateProfile, Job, Notification, SourceListing, SourceSyncHistory
 from .notifications import (
     channel_status,
     load_settings,
@@ -102,6 +102,11 @@ async def restrict_api(request, call_next):
         return await call_next(request)
 
     access_token = config.access_token()
+    if not access_token and _is_local_request(request):
+        # Yerel geliştirme: anahtar tanımlı değilse yalnızca bu bilgisayardan gelen istekler kabul edilir.
+        if _read_only() and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            return JSONResponse(status_code=404, content={"detail": "Salt okunur yayında veri değiştiren işlemler kullanılamaz."})
+        return await call_next(request)
     if not access_token:
         return JSONResponse(
             status_code=503,
@@ -128,6 +133,17 @@ async def restrict_api(request, call_next):
 restrict_demo_api = restrict_api  # eski ad
 
 
+def _is_local_request(request) -> bool:
+    """Anahtarsız erişime yalnızca yerel makineden ve bir vekil sunucu arkasında değilken izin verilir."""
+    if os.getenv("RENDER") or config.env_flag("CAREERPILOT_REQUIRE_TOKEN") or DEMO_MODE or config.is_demo_mode():
+        return False
+    headers = request.headers
+    if headers.get("x-forwarded-for") or headers.get("forwarded") or headers.get("x-real-ip"):
+        return False
+    host = request.client.host if request.client else ""
+    return host in {"127.0.0.1", "::1"}
+
+
 def _read_only() -> bool:
     return DEMO_MODE or config.is_read_only()
 
@@ -147,6 +163,11 @@ SOURCES_STATUS = {
         "name": "İŞKUR Kamu Memur Alım İlanları",
         "url": "https://www.iskur.gov.tr/ilanlar/kamu-memur-alim-ilanlari",
         "description": "İŞKUR'un il bazında yayımladığı kamu memur alım ilanları ve resmî ilan PDF'leri.",
+    },
+    "İlan.gov.tr": {
+        "name": "İlan.gov.tr",
+        "url": "https://www.ilan.gov.tr/ilan/kategori/44/kamu-personel-alim-ve-sinavlari",
+        "description": "Basın İlan Kurumu resmî ilan portalındaki kamu personel alım ve sınav ilanları.",
     },
     "Yerel Yönetimler Genel Müdürlüğü": {
         "name": "Yerel Yönetimler Genel Müdürlüğü",
@@ -168,6 +189,7 @@ def health():
         "version": config.APP_VERSION,
         "demo_mode": DEMO_MODE or config.is_demo_mode(),
         "read_only": _read_only(),
+        "auth_required": bool(config.access_token()),
         "auto_sync_hours": 0 if _read_only() else config.sync_interval_hours(),
     }
 
@@ -435,29 +457,46 @@ def put_notification_settings(payload: NotificationSettings, db: Session = Depen
 def list_sources(db: Session = Depends(get_db)):
     sources_data = []
     for info in SOURCES_STATUS.values():
-        job_count = db.scalar(select(func.count(Job.id)).where(Job.source_name == info["name"])) or 0
+        job_count = db.scalar(select(func.count(Job.id)).where(
+            Job.source_name == info["name"], Job.archived_reason == "",
+        )) or 0
         history = db.scalar(
             select(SourceSyncHistory)
             .where(SourceSyncHistory.source_name == info["name"])
             .order_by(SourceSyncHistory.checked_at.desc(), SourceSyncHistory.id.desc())
             .limit(1)
         )
+        last_success = db.scalar(
+            select(SourceSyncHistory.checked_at)
+            .where(SourceSyncHistory.source_name == info["name"], SourceSyncHistory.status.in_(("ok", "partial")))
+            .order_by(SourceSyncHistory.checked_at.desc()).limit(1)
+        )
+        failed = db.execute(
+            select(Job.id, Job.title, SourceListing.official_url)
+            .join(SourceListing, SourceListing.job_id == Job.id)
+            .where(Job.source_name == info["name"], SourceListing.status == "detail_failed", Job.archived_reason == "")
+            .limit(25)
+        ).all()
         sources_data.append({
             **info,
             "status": (
                 "Henüz taranmadı" if not history
                 else "Aktif" if history.status == "ok"
                 else "Kısmi" if history.status == "partial"
+                else "Uyarı" if history.status == "warning"
                 else "Hata"
             ),
             "job_count": job_count,
             "last_sync": history.checked_at.isoformat(timespec="seconds") if history else None,
+            "last_success": last_success.isoformat(timespec="seconds") if last_success else None,
             "last_found": history.found if history else 0,
             "last_created": history.imported if history else 0,
             "last_updated": history.updated if history else 0,
+            "last_unchanged": history.unchanged if history else 0,
             "last_detail_failed": history.detail_failed if history else 0,
             "pages_checked": history.pages_checked if history else 0,
             "last_error": (history.error or None) if history else None,
+            "failed_items": [{"job_id": row.id, "title": row.title, "url": row.official_url} for row in failed],
         })
     return sources_data
 
@@ -507,7 +546,7 @@ def sync_public_job_documents(db: Session = Depends(get_db)):
 @app.get("/public/summary")
 def public_summary(db: Session = Depends(get_db)):
     jobs = list(db.scalars(
-        select(Job).where(Job.sector == "public").order_by(Job.created_at.desc(), Job.id.desc())
+        select(Job).where(Job.sector == "public", Job.archived_reason == "").order_by(Job.created_at.desc(), Job.id.desc())
     ).all())
     today = date.today()
     recent_cutoff = datetime.now() - timedelta(days=7)
@@ -558,7 +597,7 @@ def public_listings(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Job).where(Job.sector == "public").order_by(Job.created_at.desc(), Job.id.desc())
+    stmt = select(Job).where(Job.sector == "public", Job.archived_reason == "").order_by(Job.created_at.desc(), Job.id.desc())
     if source:
         stmt = stmt.where(Job.source_name == source)
     if q and q.strip():

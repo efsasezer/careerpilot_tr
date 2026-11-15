@@ -9,8 +9,12 @@ yeni eşleşmeler ile yaklaşan son başvurular için bildirim üretir.
 
 ## Neler yapar?
 
-- **Dört resmî kaynağı tarar:** SBB Kamu İlanları, Kariyer Kapısı, İŞKUR kamu memur alım
-  ilanları, Yerel Yönetimler Genel Müdürlüğü duyuruları.
+- **Beş resmî kaynağı tarar:** Kariyer Kapısı, İŞKUR kamu memur alım ilanları, SBB Kamu
+  İlanları, Yerel Yönetimler Genel Müdürlüğü duyuruları ve İlan.gov.tr (Kamu Personel Alım
+  ve Sınavları).
+- **İlan havuzu uygunluktan bağımsızdır:** Bulunan her ilan önce kaydedilir, sonra
+  değerlendirilir. Uygun olmayan, ayrıntısı okunamayan ya da henüz değerlendirilemeyen ilan
+  da listede kalır; veri/belge durumu ve “inceleme gerekli” bilgisi ayrıca gösterilir.
 - **İlanın resmî metnini okur:** PDF/DOCX ilan metinleri ve kadro tabloları ayrıştırılır;
   her kadro satırı (unvan, nitelik, kontenjan, KPSS türü, taban puan, cinsiyet) ayrı
   pozisyon olarak değerlendirilir.
@@ -30,7 +34,7 @@ Gerekenler: Python 3.11+, Node.js 20+.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m playwright install chromium   # yalnızca Kariyer Kapısı taraması için
+.venv/bin/python -m playwright install chromium   # Kariyer Kapısı ve İlan.gov.tr taraması için
 npm --prefix frontend ci
 ```
 
@@ -41,19 +45,20 @@ Windows'ta `.venv/bin/` yerine `.venv\Scripts\` kullanın.
 İki terminal açın:
 
 ```bash
-sh scripts/run_api.sh
+.venv/bin/python -m uvicorn backend.main:app --reload
 ```
 
 ```bash
 npm --prefix frontend run dev
 ```
 
-- `scripts/run_api.sh`, `.env` dosyasını okur. `CAREERPILOT_ACCESS_TOKEN` tanımlı değilse
-  rastgele bir anahtar üretip `.env` dosyasına yazar. Arayüze (`http://localhost:5173`) bu
-  anahtarla girilir. Ayarların tamamı `.env.example` içinde açıklanmıştır.
-- Betiği kullanmadan başlatmak için:
-  `CAREERPILOT_ACCESS_TOKEN=... .venv/bin/python -m uvicorn backend.main:app`
-- API belgeleri: `http://127.0.0.1:8000/docs`
+Arayüz `http://localhost:5173` adresinde açılır. **Yerelde erişim anahtarı gerekmez:**
+`CAREERPILOT_ACCESS_TOKEN` tanımlı değilse API yalnızca bu bilgisayardan (127.0.0.1) gelen
+isteklere yanıt verir ve arayüz giriş ekranını atlar. Başka bir makineden gelen, bir vekil
+sunucu üzerinden iletilen ya da Render üzerindeki istekler anahtar olmadan reddedilir.
+Yayında anahtar zorunludur; yerelde de anahtar istemek için `.env` dosyasına
+`CAREERPILOT_ACCESS_TOKEN` yazın. `sh scripts/run_api.sh`, `.env` dosyasını yükleyip aynı
+komutu çalıştırır. API belgeleri: `http://127.0.0.1:8000/docs`
 
 İlk kullanım: **Profilim** sayfasında öğrenim düzeyi, bölüm, fakülte ve bütün KPSS
 puanlarınızı girin → **Kaynaklar › Şimdi tara** → **İlanlar**.
@@ -90,7 +95,11 @@ sayılan bölümler** alanına ekleyebilirsiniz.
   “Doğrulanmalı” olarak kalır ve Kaynaklar sayfasında raporlanır. OCR yoktur.
 - Yerel Yönetimler duyurularının ek belgeleri (`webdosya.csb.gov.tr`) sunucunun sertifika
   zinciri doğrulanamadığı için indirilmez; bağlantı kullanıcıya gösterilir. Aynı ilanlar
-  çoğunlukla İŞKUR/SBB üzerinden tam metniyle gelir ve tek kartta birleştirilir.
+  çoğunlukla İŞKUR/SBB/İlan.gov.tr üzerinden tam metniyle gelir ve tek kartta birleştirilir.
+  (İlan.gov.tr de ara sertifikasını göndermez; orada eksik ara sertifika resmî adresinden
+  indirilerek zincir güvenilir köke kadar doğrulanır. Sertifika doğrulaması hiç kapatılmaz.)
+- Hiçbir kayıt silinmez. İlan olmayan eski kayıtlar, iptal duyuruları ve aynı kaynaktaki
+  kopyalar `archived_reason` ile arşivlenir; `/jobs` yanıtında görünmeye devam eder.
 - SBB ilan bağlantıları oturuma özeldir; arayüz SBB liste sayfasına yönlendirir ve okunan
   resmî metni ilan ayrıntısında gösterir.
 - ÖSYM merkezi yerleştirme (KPSS tercih kılavuzu) kadroları henüz taranmıyor.

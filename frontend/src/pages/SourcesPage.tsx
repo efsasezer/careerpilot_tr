@@ -1,4 +1,5 @@
 import { ExternalLink, RefreshCw } from "lucide-react";
+import { useOpenJob } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
 import { QueryState } from "../components/shared/QueryState";
 import { useHealth, useSources, useStartSync, useSyncStatus } from "../services/api/hooks";
@@ -9,6 +10,7 @@ export default function SourcesPage() {
   const health = useHealth();
   const sync = useSyncStatus();
   const start = useStartSync();
+  const open = useOpenJob();
   const readOnly = health.data?.read_only ?? true;
   const running = sync.data?.running ?? false;
   const report = sync.data?.report;
@@ -47,7 +49,7 @@ export default function SourcesPage() {
 
       <div className="source-grid">
         {(query.data ?? []).map((source) => {
-          const tone = source.status === "Aktif" ? "ok" : source.status === "Hata" ? "bad" : source.status === "Kısmi" ? "warn" : "muted";
+          const tone = source.status === "Aktif" ? "ok" : source.status === "Hata" ? "bad" : source.status === "Kısmi" || source.status === "Uyarı" ? "warn" : "muted";
           return (
             <article className="panel source-card" key={source.name}>
               <div className="source-head">
@@ -58,11 +60,23 @@ export default function SourcesPage() {
               <dl className="fact-list">
                 <div><dt>Kayıtlı ilan</dt><dd>{source.job_count}</dd></div>
                 <div><dt>Son taramada bulunan</dt><dd>{source.last_found}</dd></div>
-                <div><dt>Yeni / güncellenen</dt><dd>{source.last_created} / {source.last_updated}</dd></div>
+                <div><dt>Yeni / güncellenen / değişmeyen</dt><dd>{source.last_created} / {source.last_updated} / {source.last_unchanged}</dd></div>
+                <div><dt>Kontrol edilen sayfa</dt><dd>{source.pages_checked}</dd></div>
                 <div><dt>Ayrıntısı okunamayan</dt><dd>{source.last_detail_failed}</dd></div>
-                <div><dt>Son tarama</dt><dd>{formatTimestamp(source.last_sync, "Henüz taranmadı")}</dd></div>
+                <div><dt>Son kontrol</dt><dd>{formatTimestamp(source.last_sync, "Henüz taranmadı")}</dd></div>
+                <div><dt>Son başarılı tarama</dt><dd>{formatTimestamp(source.last_success, "Henüz yok")}</dd></div>
               </dl>
               {source.last_error && <p className="source-error">{source.last_error}</p>}
+              {source.failed_items.length > 0 && (
+                <details className="failed-items">
+                  <summary>Ayrıntısı okunamayan {source.failed_items.length} ilan (havuzda duruyor, sonraki taramada yeniden denenir)</summary>
+                  <ul>
+                    {source.failed_items.map((item) => (
+                      <li key={item.job_id}><button type="button" className="link-button" onClick={() => open(item.job_id)}>{item.title}</button></li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               <a className="text-link" href={source.url} target="_blank" rel="noreferrer">Resmî siteyi aç <ExternalLink size={14} /></a>
             </article>
           );

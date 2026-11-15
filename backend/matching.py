@@ -117,6 +117,7 @@ def decompose_job_positions(job: Job, documents: list[JobDocument], positions_by
             "description": "\n".join(filter(None, (shared_text, row.requirements_text))),
             "position_specific": bool(row.education_requirement),
             "source_document_id": document.id,
+            "basis": {"document_title": document.title or "Resmî ilan metni", "document_url": document.document_url, "table_row": row.row_index},
             "written_exam_invite_text": row.written_exam_invite_text,
             "written_exam_invite_count": row.written_exam_invite_count,
         })
@@ -222,7 +223,8 @@ def _data_version(db: Session, profile) -> tuple:
     documents = db.execute(select(func.count(JobDocument.id), func.max(JobDocument.checked_at))).one()
     positions = db.scalar(select(func.count(DocumentPosition.id)))
     tracked = db.execute(
-        select(Job.id, Job.tracking, Job.status).where((Job.tracking != "") | (Job.status == "İptal edildi")).order_by(Job.id)
+        select(Job.id, Job.tracking, Job.status, Job.cancellation_notice)
+        .where((Job.tracking != "") | (Job.status == "İptal edildi") | (Job.cancellation_notice != "")).order_by(Job.id)
     ).all()
     return (
         tuple(jobs), tuple(documents), positions, tuple(map(tuple, tracked)),
@@ -245,7 +247,9 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
     profile = build_candidate_profile(stored_profile)
     preferred = _preferred_cities(profile)
 
-    jobs = list(db.scalars(select(Job).where(Job.sector == "public").order_by(Job.id.desc())).all())
+    jobs = list(db.scalars(
+        select(Job).where(Job.sector == "public", Job.archived_reason == "").order_by(Job.id.desc())
+    ).all())
     job_ids = [job.id for job in jobs]
     scans = {
         scan.job_id: scan
@@ -302,6 +306,7 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
             {"source_name": other.source_name, "source_url": other.source_url or None} for other in duplicates
         ]
         tracking = job.tracking or next((other.tracking for other in duplicates if other.tracking), "")
+        unread_documents = [d for d in job_documents if d.status in ("unavailable", "unreadable", "partially_read")]
         for position in decompose_job_positions(job, job_documents, positions_by_document):
             # Birincil kayıtta eksik olan tarih/şehir bilgisi diğer kaynaktaki kopyadan tamamlanır.
             for field in ("application_deadline", "application_start", "city"):
@@ -341,6 +346,17 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
                 "kpss_min_score": position["kpss_min_score"] if position["kpss_min_score"] is not None else match["kpss"]["minimum_score"],
                 "location_match": location_match(preferred, position["city"] or "", job.organization, job.title),
                 "tracking": tracking,
+                # Veri/belge durumu, uygunluk kategorisinden bağımsız gösterilir.
+                "data_status": (
+                    "listing_only" if match["data_quality"] == "listing_only"
+                    else "partial" if unread_documents else "read"
+                ),
+                "review_required": (
+                    match["category"] == "POTANSİYEL OLARAK UYGUN" or match["data_quality"] == "listing_only"
+                    or bool(job.cancellation_notice and not cancelled)
+                ),
+                "cancellation_notice": job.cancellation_notice or "",
+                "basis": position.get("basis"),
                 "notes": job.notes or "",
                 "first_seen": _iso(job.created_at),
                 "written_exam_invite_text": position.get("written_exam_invite_text") or "",

@@ -32,6 +32,7 @@ class JobRead(JobCreate):
     model_config = ConfigDict(from_attributes=True)
     id: int
     tracking: str = ""
+    archived_reason: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

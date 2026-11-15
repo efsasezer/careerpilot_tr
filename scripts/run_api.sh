@@ -1,5 +1,5 @@
 #!/bin/sh
-# API'yi yerelde başlatır. İlk çalıştırmada rastgele bir erişim anahtarı üretip .env dosyasına yazar.
+# API'yi yerelde başlatır; varsa .env dosyasındaki ayarları yükler.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -13,10 +13,7 @@ if [ -f .env ]; then
 fi
 
 if [ -z "$CAREERPILOT_ACCESS_TOKEN" ]; then
-  CAREERPILOT_ACCESS_TOKEN="$("$PYTHON" -c 'import secrets; print(secrets.token_urlsafe(24))')"
-  export CAREERPILOT_ACCESS_TOKEN
-  printf 'CAREERPILOT_ACCESS_TOKEN=%s\n' "$CAREERPILOT_ACCESS_TOKEN" >> .env
-  echo "Yeni erişim anahtarı üretildi ve .env dosyasına yazıldı. Arayüzde bu anahtarla giriş yapın."
+  echo "Erişim anahtarı tanımlı değil: API yalnızca bu bilgisayardan gelen isteklere anahtarsız yanıt verir."
 fi
 
 exec "$PYTHON" -m uvicorn backend.main:app --host "${HOST:-127.0.0.1}" --port "${PORT:-8000}" "$@"

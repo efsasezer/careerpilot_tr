@@ -33,6 +33,10 @@ class Job(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     # Kullanıcının ilan takibi: "" | saved | applied | hidden
     tracking: Mapped[str] = mapped_column(String(20), default="")
+    # Boş değilse kayıt ilan havuzunda saklanır ama değerlendirilmez (kopya, ilan olmayan sayfa, iptal duyurusu).
+    archived_reason: Mapped[str] = mapped_column(String(200), default="")
+    # Kurumun yayımladığı, bu ilanla kesin eşleştirilemeyen iptal duyurusu (kullanıcı doğrulamalı).
+    cancellation_notice: Mapped[str] = mapped_column(String(400), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, onupdate=func.now())
 

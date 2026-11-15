@@ -11,7 +11,7 @@ function position(jobId: number, organization: string, category: MatchCategory, 
     city: null, quota: null, source_url: null, source_name: "SBB Kamu İlanları", also_listed: [], announcement_date: null,
     application_start: null, application_deadline: "2099-01-10", days_left: 5, application_status: "Başvuru Açık", is_expired: false,
     employment_type: "", recruitment_method: "", education_requirement: "", qualification_codes: "", kpss_score_type: "P3",
-    kpss_min_score: 70, location_match: null, tracking: "", notes: "", first_seen: null,
+    kpss_min_score: 70, location_match: null, tracking: "", data_status: "read", review_required: false, cancellation_notice: "", basis: null, notes: "", first_seen: null,
     match: {
       category, reason: "gerekçe", kind: "standard", data_quality: "full", met_conditions: [], failed_conditions: [], unknown_conditions: [],
       general_conditions: [], requirements: [{ name: "Eğitim", status: category === "UYGUN" ? "met" : "not_met", detail: `${organization} eğitim gerekçesi` }],

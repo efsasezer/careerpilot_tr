@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, CircleX, Clock3 } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleX, Clock3, FileText } from "lucide-react";
 import type { MatchCategory, RequirementStatus } from "../../types/api";
 import { CATEGORY_LABEL, deadlineLabel } from "../../utils/format";
 
@@ -25,6 +25,17 @@ export function DeadlineChip({ daysLeft, status }: { daysLeft: number | null; st
       <Clock3 size={13} aria-hidden /> {deadlineLabel(daysLeft, status)}
     </span>
   );
+}
+
+const DATA_LABEL = {
+  read: "Resmî metin okundu",
+  partial: "Ek belge okunamadı",
+  listing_only: "Yalnızca liste bilgisi",
+} as const;
+
+export function DataStatusChip({ status, always = false }: { status: keyof typeof DATA_LABEL; always?: boolean }) {
+  if (status === "read" && !always) return null;
+  return <span className={`chip ${status === "read" ? "" : "chip-warn"}`}><FileText size={13} aria-hidden /> {DATA_LABEL[status]}</span>;
 }
 
 export function StatusDot({ status }: { status: RequirementStatus }) {
