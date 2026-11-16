@@ -19,21 +19,9 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
-def is_demo_mode() -> bool:
-    return env_flag("CAREERPILOT_DEMO_MODE")
-
-
-def is_read_only() -> bool:
-    return is_demo_mode() or env_flag("CAREERPILOT_READ_ONLY")
-
-
-def access_token() -> str:
-    return os.getenv("CAREERPILOT_ACCESS_TOKEN", "").strip()
-
-
 def sync_interval_hours() -> float:
-    """Otomatik kaynak taraması aralığı. 0 otomatik taramayı kapatır."""
-    return max(0.0, env_float("CAREERPILOT_SYNC_INTERVAL_HOURS", 6.0))
+    """Sunucu içi otomatik tarama aralığı. Varsayılan 0: kapalı (tarama elle ya da GitHub Actions ile)."""
+    return max(0.0, env_float("CAREERPILOT_SYNC_INTERVAL_HOURS", 0.0))
 
 
 def source_request_delay() -> float:

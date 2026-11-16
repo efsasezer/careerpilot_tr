@@ -65,10 +65,11 @@ def migrate():
         "university", "kpss_score_type", "accepts_shifts", "yds_score", "age",
         "driver_license", "experience_years", "has_internship",
         "internship_description", "certificates", "programming_language_evidence",
-        "notes", "updated_at", "kpss_scores", "faculty", "department_aliases", "gender", "special_status",
+        "notes", "updated_at", "kpss_scores", "faculty", "department_aliases", "gender", "special_status", "birth_date", "military_status",
+        "educations", "experiences", "experience_state", "foreign_language", "preferences",
     }
     schema_change_needed = (
-        not {"source_listings", "source_sync_history"} <= tables
+        not {"source_listings", "source_sync_history", "user_job_state", "user_verifications", "job_events", "user_tasks", "user_sessions"} <= tables
         or not required_job_columns <= job_columns
         or not required_profile_columns <= profile_columns
     )
@@ -114,6 +115,14 @@ def migrate():
     add_column_if_missing(cursor, "candidate_profile", "faculty", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "gender", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "special_status", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "birth_date", "DATE")
+    add_column_if_missing(cursor, "candidate_profile", "military_status", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "educations", "TEXT", default="'[]'")
+    add_column_if_missing(cursor, "candidate_profile", "experiences", "TEXT", default="'[]'")
+    add_column_if_missing(cursor, "candidate_profile", "experience_state", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "foreign_language", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "preferences", "TEXT", default="'{}'")
+    add_column_if_missing(cursor, "job_documents", "ocr_confidence", "REAL")
     add_column_if_missing(cursor, "candidate_profile", "department_aliases", "TEXT", default="''")
 
     conn.commit()
@@ -135,6 +144,16 @@ def migrate():
         Base.metadata.create_all(bind=migration_engine)
     finally:
         migration_engine.dispose()
+    with sqlite3.connect(str(db_path)) as move:
+        # Takip durumu ve notlar ilan tablosundan kullanıcı tablosuna taşınır (bir kez).
+        columns = {row[1] for row in move.execute("PRAGMA table_info(jobs)")}
+        if {"tracking", "notes"} <= columns:
+            move.execute(
+                "INSERT OR IGNORE INTO user_job_state (job_id, tracking, notes, updated_at) "
+                "SELECT id, COALESCE(tracking, ''), COALESCE(notes, ''), CURRENT_TIMESTAMP FROM jobs "
+                "WHERE COALESCE(tracking, '') <> '' OR COALESCE(notes, '') <> ''"
+            )
+            move.commit()
     with sqlite3.connect(str(db_path)) as verify:
         integrity = verify.execute("PRAGMA integrity_check").fetchone()[0]
         after_counts = {

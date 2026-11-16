@@ -5,15 +5,17 @@ services:
     plan: free
     rootDir: .
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
     healthCheckPath: /health
     autoDeploy: false
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
-      - key: CAREERPILOT_DEMO_MODE
-        value: "true"
-      - key: CAREERPILOT_ACCESS_TOKEN
+      # Giriş şifresi: Render panelinden elle girilir, depoya yazılmaz.
+      - key: CAREERPILOT_PASSWORD
+        sync: false
+      # Oturum imzalama anahtarı: Render üretir.
+      - key: CAREERPILOT_SESSION_SECRET
         generateValue: true
   - type: web
     name: careerpilot-tr-web
@@ -22,10 +24,11 @@ services:
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
     autoDeploy: false
-    envVars:
-      - key: VITE_API_URL
-        value: https://careerpilot-tr-api.onrender.com
     routes:
+      # API aynı alan adından sunulur; böylece oturum çerezi birinci taraf (SameSite=Lax) kalır.
+      - type: rewrite
+        source: /api/*
+        destination: https://careerpilot-tr-api.onrender.com/*
       - type: rewrite
         source: /*
         destination: /index.html

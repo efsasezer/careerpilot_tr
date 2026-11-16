@@ -1,31 +1,32 @@
 # CareerPilot TR – Kamu ilan takibi ve KPSS eşleştirme
 
-KPSS ile atanmak isteyen bir aday için resmî kamu ilanı kaynaklarını tarar, her ilanı
-adayın öğrenim durumu ve KPSS puanlarıyla karşılaştırır, uygun olanları listeler ve
-yeni eşleşmeler ile yaklaşan son başvurular için bildirim üretir.
+Resmî kamu ilanı kaynaklarını tarar, her kadroyu adayın öğrenim durumu ve KPSS puanlarıyla
+karşılaştırır, başvuru/sınav/sonuç tarihlerini takvime işler ve başvuru sürecini takip eder.
 
 > Sonuçlar otomatik bir **ön elemedir**; başvuru ya da atama garantisi vermez.
 > Başvurmadan önce resmî ilanı mutlaka okuyun.
 
 ## Neler yapar?
 
-- **Altı resmî kaynağı tarar:** Kariyer Kapısı, İŞKUR kamu memur alım ilanları, SBB Kamu
-  İlanları, Yerel Yönetimler Genel Müdürlüğü duyuruları, İlan.gov.tr (Kamu Personel Alım
-  ve Sınavları) ve ÖSYM'nin KPSS merkezi yerleştirme (tercih) duyuruları.
-- **İlan havuzu uygunluktan bağımsızdır:** Bulunan her ilan önce kaydedilir, sonra
-  değerlendirilir. Uygun olmayan, ayrıntısı okunamayan ya da henüz değerlendirilemeyen ilan
-  da listede kalır; veri/belge durumu ve “inceleme gerekli” bilgisi ayrıca gösterilir.
-- **İlanın resmî metnini okur:** PDF/DOCX ilan metinleri ve kadro tabloları ayrıştırılır;
-  her kadro satırı (unvan, nitelik, kontenjan, KPSS türü, taban puan, cinsiyet) ayrı
-  pozisyon olarak değerlendirilir.
-- **Profile göre sınıflandırır:** Uygun / Doğrulanmalı / Uygun değil. Her şart (öğrenim,
-  KPSS, yabancı dil, yaş, deneyim, ehliyet, cinsiyet, özel statü…) ayrı ayrı gerekçesiyle
-  gösterilir. Motor belirli bir bölüme bağlı değildir.
-- **Aynı ilanı tekilleştirir:** Bir ilan birden çok kaynakta yayımlandıysa tek kart olur.
-- **Bildirim gönderir:** Uygulama içi bildirim merkezi, tarayıcı bildirimi; isteğe bağlı
-  e-posta (SMTP) ve Telegram. Son başvuruya N gün kala hatırlatma.
-- **Takip:** İlanı kaydet, “başvurdum” olarak işaretle, gizle, not ekle; başvuru takvimi.
-- **Otomatik tarama:** Sunucu çalışırken kaynaklar varsayılan olarak 6 saatte bir taranır.
+- **Altı resmî kaynak:** Kariyer Kapısı, İŞKUR kamu memur alım ilanları, SBB Kamu İlanları,
+  Yerel Yönetimler Genel Müdürlüğü, İlan.gov.tr ve ÖSYM tercih duyuruları.
+- **Kadro bazlı uygunluk:** İlan değil kadro değerlendirilir. Her şart için *Karşılıyor /
+  Karşılamıyor / Bilinmiyor / Aranmıyor* sonucu, açıklaması ve ilan metninden kanıt cümlesi
+  gösterilir. Yaş ve deneyim ilanın başvuru tarihine göre hesaplanır.
+- **Elle doğrulama:** Her ilan ve kadro için “Doğruladım: Uygun / Uygun değil”. Kararınız
+  sistemin kararından ayrı saklanır, her zaman önceliklidir; yeniden tarama, profil
+  değişikliği ya da motor güncellemesi kararınızı değiştirmez. İlan sonradan güncellenirse
+  karar silinmez, “İlan güncellendi, doğrulamanı gözden geçir” uyarısı çıkar.
+- **Tarih çıkarımı (kural tabanlı):** Başvuru, sınav/mülakat, sonuç ve evrak tarihleri ilan
+  metninden kanıt cümlesiyle çıkarılır. Metinde olmayan tarih üretilmez. Yapay zekâ modeli
+  kullanılmaz.
+- **Takvim:** “Başvuru takvimi” sayfasında Son başvuru listesi, Ay, Hafta, Gün ve Ajanda
+  sekmeleri; kişisel ve tekrarlayan görevler; `.ics` dışa aktarma.
+- **Takip:** Kaydet → Başvurdum → Sonuç bekleniyor → Kazandım / Olmadı, notlar.
+- **Taranmış PDF'ler için OCR:** Sistem paketi gerektirmeyen OCR (RapidOCR). OCR ile okunan
+  ilan otomatik “Uygun” olmaz; PDF uygulama içinde açılır ve elle doğrulanır.
+- **Uygulama içi bildirimler:** Site açıldığında hesaplanır (bugün/yarın son gün, bugün
+  açılan başvuru, bugünkü sınav/sonuç, bugünkü görevler, güncellenen ilanlar).
 
 ## Kurulum
 
@@ -36,112 +37,97 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m playwright install chromium   # Kariyer Kapısı ve İlan.gov.tr taraması için
 npm --prefix frontend ci
+cp .env.example .env    # şifreyi ve oturum anahtarını doldurun
 ```
-
-Windows'ta `.venv/bin/` yerine `.venv\Scripts\` kullanın.
 
 ## Çalıştırma
 
-İki terminal açın:
-
 ```bash
-.venv/bin/python -m uvicorn backend.main:app --reload
+sh scripts/run_api.sh
 ```
 
 ```bash
 npm --prefix frontend run dev
 ```
 
-Arayüz `http://localhost:5173` adresinde açılır. **Yerelde erişim anahtarı gerekmez:**
-`CAREERPILOT_ACCESS_TOKEN` tanımlı değilse API yalnızca bu bilgisayardan (127.0.0.1) gelen
-isteklere yanıt verir ve arayüz giriş ekranını atlar. Başka bir makineden gelen, bir vekil
-sunucu üzerinden iletilen ya da Render üzerindeki istekler anahtar olmadan reddedilir.
-Yayında anahtar zorunludur; yerelde de anahtar istemek için `.env` dosyasına
-`CAREERPILOT_ACCESS_TOKEN` yazın. `sh scripts/run_api.sh`, `.env` dosyasını yükleyip aynı
-komutu çalıştırır. API belgeleri: `http://127.0.0.1:8000/docs`
+Arayüz `http://localhost:5173` adresinde açılır ve API'ye aynı adresten `/api` üzerinden
+ulaşır. Giriş, `.env` dosyasındaki `CAREERPILOT_PASSWORD` ile yapılır.
 
-İlk kullanım: **Profilim** sayfasında öğrenim düzeyi, bölüm, fakülte ve bütün KPSS
-puanlarınızı girin → **Kaynaklar › Şimdi tara** → **İlanlar**.
+## Giriş ve güvenlik
 
-## Bildirim kanalları
+| Ortam değişkeni | Zorunlu | Açıklama |
+|---|---|---|
+| `CAREERPILOT_PASSWORD` | Evet | Tek kullanıcılı giriş şifresi |
+| `CAREERPILOT_SESSION_SECRET` | Evet | Oturum çerezini imzalayan anahtar (en az 16 karakter) |
 
-| Kanal | Nasıl açılır |
-|---|---|
-| Uygulama içi | Her zaman açık (Bildirimler sayfası, zil simgesi) |
-| Tarayıcı | Ayarlar › “İzin ver” (uygulama açıkken masaüstü uyarısı) |
-| E-posta | `.env` içine `CAREERPILOT_SMTP_*` değerlerini yazın, Ayarlar'da adresinizi girin |
-| Telegram | @BotFather ile bot oluşturun, anahtarı `CAREERPILOT_TELEGRAM_BOT_TOKEN` olarak yazın, bota bir mesaj atın, sohbet kimliğinizi Ayarlar'a girin |
+- Şifre tarayıcıda saklanmaz. Sunucuda sabit zamanlı karşılaştırılır; başarılı girişte
+  HttpOnly + SameSite=Lax (HTTPS'te Secure) çerezli, 14 günlük oturum açılır.
+- Oturum sunucuda tutulur; “Oturumu kapat” onu sunucuda geçersiz kılar.
+- 10 dakikada 5 hatalı denemeden sonra o adres 15 dakika bekletilir.
+- Değişkenlerden biri eksikse uygulama açık erişime düşmez; giriş kapalı kalır ve hangi
+  değişkenin eksik olduğu bildirilir.
+- `/health` dışındaki bütün uçlar (okuma ve yazma) sunucuda oturum kontrolünden geçer.
 
-Ayarlar sayfasındaki **Test bildirimi gönder** düğmesi kanalı dener. Bir kanal hata
-verirse bekleyen bildirimler sonraki taramada yeniden gönderilir.
+## Veritabanı
 
-## Otomatik günlük tarama (GitHub Actions)
+Mevcut SQLite dosyası kullanılır: varsayılan yol proje kökündeki `careerpilot.db`
+(`DATABASE_URL` ile değiştirilebilir). Şema değişikliğinden önce dosyanın yanına
+`careerpilot.db.backup.<zaman>` adıyla yedek alınır.
 
-`.github/workflows/gunluk-tarama.yml` her gün 08:30 ve 17:30'da (Türkiye saati) bütün
-kaynakları tarar, `careerpilot.db` dosyasını günceller, yeni eşleşmeler ve yaklaşan son
-başvurular için bildirim gönderir. Bilgisayarınızın açık olması gerekmez.
+Kullanıcı verisi ilan tablolarından ayrıdır ve tarama bu tablolara dokunmaz:
+`candidate_profile`, `user_job_state` (kaydet/başvuru/notlar), `user_verifications`
+(elle doğrulamalar), `user_tasks`, `user_sessions`, `app_settings`, kullanıcının düzenlediği
+`job_events` kayıtları.
 
-Kurulum (depo sahibi, bir kez): GitHub'da **Settings → Secrets and variables → Actions →
-New repository secret** ile aşağıdakilerden kullanacaklarınızı ekleyin.
+## Yayın (Render)
 
-| Gizli değer | Ne için |
-|---|---|
-| `CAREERPILOT_TELEGRAM_BOT_TOKEN` | Telegram botunun anahtarı (@BotFather) |
-| `CAREERPILOT_NOTIFY_TELEGRAM_CHAT_ID` | Bildirimin gideceği sohbet kimliği |
-| `CAREERPILOT_SMTP_HOST`, `CAREERPILOT_SMTP_PORT`, `CAREERPILOT_SMTP_USER`, `CAREERPILOT_SMTP_PASSWORD`, `CAREERPILOT_SMTP_FROM` | E-posta gönderimi |
-| `CAREERPILOT_NOTIFY_EMAIL_TO` | Bildirimin gideceği e-posta adresi |
-| `RENDER_DEPLOY_HOOK_URL` | İsteğe bağlı: Render'da `careerpilot-tr-api` → Settings → Deploy Hook adresi. Tanımlıysa her taramadan sonra yayındaki site de güncellenir. |
+`render.yaml` iki servis tanımlar: API (`careerpilot-tr-api`) ve statik site
+(`careerpilot-tr-web`). Statik site `/api/*` isteklerini API'ye yönlendirir; böylece oturum
+çerezi aynı alan adında kalır. Render panelinde `careerpilot-tr-api` için
+`CAREERPILOT_PASSWORD` değerini girin; `CAREERPILOT_SESSION_SECRET` kendiliğinden üretilir.
 
-Hiçbiri tanımlı değilse tarama yine çalışır ve veritabanını günceller; yalnızca dışarıya
-bildirim gönderilmez. Elle çalıştırmak için **Actions → Günlük ilan taraması → Run
-workflow** (“deneme” işaretlenirse hiçbir şey kaydedilmez ve gönderilmez). Her çalıştırmanın
-özetinde kaynak bazında bulunan/yeni/okunamayan sayıları görünür.
+**Veri kaybı riski:** Blueprint'te kalıcı disk yoktur. Render'ın ücretsiz planında dosya
+sistemi her yeniden yayında ve servis yeniden başladığında sıfırlanır; yayında girilen
+profil, doğrulamalar, görevler ve notlar **silinir** ve depodaki `careerpilot.db` geri gelir.
+Seçenekler:
 
-Dikkat edilecekler:
+1. Render'da kalıcı disk (ücretli plan) ekleyip `DATABASE_URL=sqlite:////var/data/careerpilot.db`
+   ve ilk açılış için `CAREERPILOT_DB_SEED_FROM_REPO=true` tanımlamak.
+2. Uygulamayı kendi bilgisayarınızda çalıştırmak (veri kalıcıdır, bütün kaynaklara erişilir).
+3. Yayını yalnızca görüntüleme için kullanıp verinin silinebileceğini kabul etmek.
 
-- İş akışı `careerpilot.db` dosyasını `main` dalına işler. Yerelde tarama yapmadan önce
-  `git pull` alın; aynı dosyayı iki yerde değiştirirseniz Git çakışma verir (ikili dosya
-  birleştirilemez, taraflardan biri seçilir).
-- Profil, yayında düzenlenemez. Profili yerelde güncelleyip `careerpilot.db` dosyasını
-  gönderin; günlük tarama o profile göre eşleştirir.
-- GitHub zamanlanmış işleri birkaç dakika gecikebilir; 60 gün hiç etkinlik olmayan
-  depolarda zamanlama kendiliğinden durur.
-
-Aynı tarama komut satırından da çalışır: `.venv/bin/python -m backend.sync`
+Diğer sınırlar: SBB, Kariyer Kapısı ve Yerel Yönetimler yurt dışındaki sunuculardan gelen
+istekleri kabul etmiyor; Render'daki “Şimdi tara” bu üç kaynağı güncelleyemeyebilir. OCR,
+ücretsiz planın 512 MB bellek sınırına sığmadığı için Render'da varsayılan olarak kapalıdır
+(`CAREERPILOT_OCR=on` ile açılabilir).
 
 ## Uygunluk sınıfları
 
-- **Uygun:** Metinden okunabilen bütün zorunlu şartlar profille karşılanıyor.
-- **Doğrulanmalı:** Açık bir uyumsuzluk yok; ancak en az bir şart metinden okunamadı ya da
-  profilde ilgili bilgi eksik (ör. ehliyet, yabancı dil puanı). Profili tamamladıkça azalır.
-- **Uygun değil:** Bölüm, öğrenim düzeyi, KPSS puan türü/taban puanı gibi açık bir zorunlu
-  şart karşılanmıyor; ya da ilan akademik kadro / özel statü (engelli, eski hükümlü) ilanı.
+- **Uygun:** Bütün zorunlu şartlar karşılanıyor ya da aranmıyor; bilinmeyen şart yok.
+- **Doğrulanmalı:** Kesin bir uyumsuzluk yok ama en az bir şart bilinmiyor (ilan okunamadı,
+  tablo ayrıştırılamadı ya da profilde ilgili bilgi “belirtilmedi”). Nedeni yazılır.
+- **Uygun değil:** En az bir zorunlu şart kesin olarak karşılanmıyor.
 
-Kurallar `backend/eligibility.py` içindedir: “tercihen” ifadeleri zorunlu sayılmaz;
-profilde olmayan bilgi uydurulmaz; kadro tablosundaki her satır yalnızca kendi şartlarıyla
-değerlendirilir; 2001/3001/4001 nitelik kodları “herhangi bir program” olarak tanınır.
-İlanda yakın bir bölüm adı geçiyorsa (ör. Yazılım Mühendisliği) profildeki **Eşdeğer
-sayılan bölümler** alanına ekleyebilirsiniz.
+Şehir ve kurum tercihleri resmî uygunluğu değiştirmez; şartları karşılayıp tercih dışı kalan
+ilan “Uygun” sekmesinde “Tercih dışı” etiketiyle görünür. “Tercihen” ifadeleri zorunlu
+sayılmaz. Genel şartlarda (“herhangi bir lisans programı”) bölüm farkı elenme sebebi değildir.
 
 ## Bilinen sınırlar
 
-- Taranmış görüntü olan (metin katmanı olmayan) PDF ilanlar okunamaz; bu ilanlar listede
-  “Doğrulanmalı” olarak kalır ve Kaynaklar sayfasında raporlanır. OCR yoktur.
-- Yerel Yönetimler duyurularının ek belgeleri (`webdosya.csb.gov.tr`) sunucunun sertifika
-  zinciri doğrulanamadığı için indirilmez; bağlantı kullanıcıya gösterilir. Aynı ilanlar
-  çoğunlukla İŞKUR/SBB/İlan.gov.tr üzerinden tam metniyle gelir ve tek kartta birleştirilir.
-  (İlan.gov.tr de ara sertifikasını göndermez; orada eksik ara sertifika resmî adresinden
-  indirilerek zincir güvenilir köke kadar doğrulanır. Sertifika doğrulaması hiç kapatılmaz.)
-- Hiçbir kayıt silinmez. İlan olmayan eski kayıtlar, iptal duyuruları ve aynı kaynaktaki
-  kopyalar `archived_reason` ile arşivlenir; `/jobs` yanıtında görünmeye devam eder.
-- SBB ilan bağlantıları oturuma özeldir; arayüz SBB liste sayfasına yönlendirir ve okunan
-  resmî metni ilan ayrıntısında gösterir.
-- ÖSYM merkezi yerleştirmede tercih dönemi duyurusu yakalanır ve bildirilir; ancak tercih
-  kılavuzundaki kadrolar tek tek ayrıştırılmaz. Kılavuz bağlantısı ilanla birlikte gösterilir.
-- Akademik kadrolar (araştırma/öğretim görevlisi) KPSS ile alınmaz. Bölümünüz aranıyorsa
-  “Doğrulanmalı” olarak gösterilir (ALES, dil ve lisansüstü şartları ilandan doğrulanmalı);
-  İlanlar sayfasındaki “Akademik ilanları gizle” seçeneğiyle listeden çıkarılabilir.
-- Uygulama tek aday profiliyle çalışır (çok kullanıcılı değildir).
+- OCR her taranmış PDF'i doğru okuyamaz; OCR ile okunan ya da okunamayan ilan “Doğrulanmalı”
+  kalır ve elle doğrulama için PDF'i yanında sunulur.
+- Yerel Yönetimler duyurularının ek belge sunucusunun (`webdosya.csb.gov.tr`) sertifikası
+  doğrulanamadığı için ekleri indirilmez; aynı ilanlar çoğunlukla diğer kaynaklardan gelir.
+- ÖSYM tercih kılavuzundaki kadrolar tek tek ayrıştırılmaz; kılavuz bağlantısı gösterilir.
+- Tarih çıkarımı kural tabanlıdır; alışılmadık cümle yapılarındaki tarihleri kaçırabilir.
+  Kaçan tarih ilan panelinden elle eklenebilir.
+- Yapay zekâ modeli (metin ya da görüntü) kullanılmaz; ilgili isteğe bağlı adımlar eklenmedi.
+
+## Otomatik günlük tarama (GitHub Actions)
+
+`.github/workflows/gunluk-tarama.yml` günde iki kez tarama yapıp `careerpilot.db` dosyasını
+depoya işler. GitHub'ın sunucuları yurt dışında olduğu için yalnızca İŞKUR, İlan.gov.tr ve
+ÖSYM güncellenir. Komut satırından tam tarama: `.venv/bin/python -m backend.sync`
 
 ## Testler
 
@@ -152,31 +138,3 @@ npm --prefix frontend run build
 ```
 
 Backend testleri geçici bir veritabanı kullanır; `careerpilot.db` dosyasına dokunmaz.
-
-## Yayın (Render)
-
-`render.yaml` iki servis tanımlar: FastAPI (`careerpilot-tr-api`) ve React statik sitesi
-(`careerpilot-tr-web`). Blueprint API'yi
-`CAREERPILOT_DEMO_MODE=true` ile **salt okunur** yayımlar: depodaki `careerpilot.db`
-gösterilir; tarama, profil düzenleme ve bildirim gönderimi kapalıdır (Render'ın ücretsiz
-dosya sistemi kalıcı değildir). Tarama ve bildirimlerin çalıştığı bir yayın için kalıcı
-disk veya harici veritabanı (`DATABASE_URL`) ile demo modunu kapatmak gerekir.
-
-**Gizlilik:** `careerpilot.db` aday profilini içerir ve depoda izlenmektedir. Depoyu
-herkese açık yapmadan önce bu dosyayı kaldırın. Erişim anahtarını paylaşmayın; `VITE_`
-değişkenlerine gizli değer koymayın.
-
-## Yapı
-
-```text
-backend/
-  main.py           FastAPI uçları, erişim denetimi
-  eligibility.py    Şart çıkarma ve profil karşılaştırma motoru
-  matching.py       İlan → pozisyon ayrıştırma, tekilleştirme, sonuç önbelleği
-  sync.py           Kaynak taraması, arka plan çalıştırıcı, zamanlayıcı
-  notifications.py  Bildirim üretimi ve e-posta/Telegram gönderimi
-  documents.py      PDF/DOCX/HTML metin ve kadro tablosu ayrıştırma
-  sources/          Kaynak bağdaştırıcıları (sbb, iskur, yerel_yonetimler, kariyer_kapisi)
-frontend/src/       React + TypeScript arayüzü (Vite)
-tests/              pytest testleri
-```

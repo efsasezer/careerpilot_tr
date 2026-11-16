@@ -7,3 +7,6 @@ pdfplumber>=0.11.4,<1.0
 python-docx>=1.1,<2.0
 pytest>=8.0,<9.0
 playwright>=1.48,<2.0
+httpx>=0.27,<1.0
+# Taranmış PDF'ler için OCR (sistem paketi gerektirmez; kurulu değilse OCR adımı atlanır)
+rapidocr-onnxruntime>=1.3,<2.0

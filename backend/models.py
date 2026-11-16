@@ -105,6 +105,8 @@ class JobDocument(Base):
     etag: Mapped[str] = mapped_column(String(500), default="")
     last_modified: Mapped[str] = mapped_column(String(200), default="")
     extracted_text: Mapped[str] = mapped_column(Text, default="")
+    # OCR ile okunduysa ortalama güven (0-1); normal metin çıkarımında boş
+    ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     shared_requirements: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
     checked_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -147,6 +149,18 @@ class CandidateProfile(Base):
     gender: Mapped[str] = mapped_column(String(10), default="")  # "" | Kadın | Erkek
     # Özel statü: "engelli", "eski hükümlü" (virgülle ayrılmış)
     special_status: Mapped[str] = mapped_column(String(100), default="")
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # "" (belirtilmedi) | yapıldı | muaf | tecilli | yapılmadı | yükümlü değil
+    military_status: Mapped[str] = mapped_column(String(40), default="")
+    # [{"level": "Lisans", "school": "...", "department": "...", "year": 2024}]
+    educations: Mapped[str] = mapped_column(Text, default="[]")
+    # [{"organization": "...", "position": "...", "start": "2023-01", "end": "2024-06"}]
+    experiences: Mapped[str] = mapped_column(Text, default="[]")
+    # "" (belirtilmedi) | none (mesleki deneyimim yok) | has
+    experience_state: Mapped[str] = mapped_column(String(10), default="")
+    foreign_language: Mapped[str] = mapped_column(String(200), default="")
+    # {"cities": [], "institution_types": [], "keywords": [], "excluded": []}
+    preferences: Mapped[str] = mapped_column(Text, default="{}")
     # Bölümün ilanlarda geçebilecek diğer adları, virgülle ayrılmış
     department_aliases: Mapped[str] = mapped_column(Text, default="")
     preferred_locations: Mapped[str] = mapped_column(String(500), default="Türkiye geneli")
@@ -187,3 +201,86 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
+
+
+# ---------------------------------------------------------------------------
+# Kullanıcı tabloları: tarama ve yeniden hesaplama bu tablolara dokunmaz.
+# ---------------------------------------------------------------------------
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class UserJobState(Base):
+    """Kaydet / başvurdum / sonuç bekleniyor / kazandım / olmadı / ilgilenmiyorum ve notlar."""
+
+    __tablename__ = "user_job_state"
+
+    job_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # "" | saved | applied | awaiting | won | lost | hidden
+    tracking: Mapped[str] = mapped_column(String(20), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class UserVerification(Base):
+    """Kullanıcının elle verdiği uygunluk kararı. Sistem kararından ayrı saklanır ve onu ezer."""
+
+    __tablename__ = "user_verifications"
+    __table_args__ = (UniqueConstraint("job_id", "position_id", name="uq_user_verification"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, index=True)
+    position_id: Mapped[str] = mapped_column(String(120), default="")  # "" = ilanın tamamı
+    decision: Mapped[str] = mapped_column(String(20))  # eligible | not_eligible
+    note: Mapped[str] = mapped_column(Text, default="")
+    verified_at: Mapped[datetime] = mapped_column(DateTime)
+    # Karar verildiği andaki ilan içeriği (metin, kadro tablosu, tarihler)
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
+    content_snapshot: Mapped[str] = mapped_column(Text, default="{}")
+    job_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class JobEvent(Base):
+    """İlan metninden çıkarılan ya da kullanıcının eklediği/düzenlediği tarihli olay."""
+
+    __tablename__ = "job_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, index=True)
+    # application_start | application_deadline | exam | interview | result | documents | appointment
+    kind: Mapped[str] = mapped_column(String(30))
+    event_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    event_time: Mapped[str] = mapped_column(String(5), default="")  # "HH:MM" ya da boş (tüm gün)
+    title: Mapped[str] = mapped_column(String(300), default="")
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(String(1000), default="")
+    source: Mapped[str] = mapped_column(String(10), default="auto")  # auto | user
+    user_edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    previous_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class UserTask(Base):
+    __tablename__ = "user_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str] = mapped_column(Text, default="")
+    task_date: Mapped[date] = mapped_column(Date)
+    start_time: Mapped[str] = mapped_column(String(5), default="")
+    end_time: Mapped[str] = mapped_column(String(5), default="")
+    priority: Mapped[str] = mapped_column(String(10), default="normal")  # low | normal | high
+    # none | daily | weekly | weekdays | monthly
+    recurrence: Mapped[str] = mapped_column(String(10), default="none")
+    weekdays: Mapped[str] = mapped_column(String(20), default="")  # "0,2,4" (Pazartesi=0)
+    until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Tamamlanan günler (ISO tarih listesi, JSON). Tekrarlamayan görevde tek öğe.
+    completed_dates: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime)

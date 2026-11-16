@@ -2,34 +2,29 @@ import { ExternalLink, RefreshCw } from "lucide-react";
 import { useOpenJob } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
 import { QueryState } from "../components/shared/QueryState";
-import { useHealth, useSources, useStartSync, useSyncStatus } from "../services/api/hooks";
+import { useRetryReading, useSources, useStartSync, useSyncStatus } from "../services/api/hooks";
 import { formatTimestamp } from "../utils/format";
 
 export default function SourcesPage() {
   const query = useSources();
-  const health = useHealth();
+  const retry = useRetryReading();
   const sync = useSyncStatus();
   const start = useStartSync();
   const open = useOpenJob();
-  const readOnly = health.data?.read_only ?? true;
   const running = sync.data?.running ?? false;
   const report = sync.data?.report;
-  const autoHours = health.data?.auto_sync_hours ?? 0;
 
   return (
     <QueryState isLoading={query.isLoading} error={query.error}>
       <PageHeader
         title="Kaynaklar"
-        description={autoHours > 0
-          ? `Resmî ilan kaynakları her ${autoHours} saatte bir otomatik taranır. İsterseniz şimdi de tarayabilirsiniz.`
-          : "Resmî ilan kaynakları. Bu yayında otomatik tarama kapalı."}
+        description="Resmî ilan kaynakları. “Şimdi tara” bütün kaynakları yeniden okur; yalnızca yeni ya da değişen ilanların ayrıntısı indirilir."
         action={
-          <button className="button button-primary" disabled={readOnly || running || start.isPending} onClick={() => start.mutate()}>
+          <button className="button button-primary" disabled={running || start.isPending} onClick={() => start.mutate()}>
             <RefreshCw size={16} className={running ? "spin" : ""} /> {running ? "Taranıyor…" : "Şimdi tara"}
           </button>
         }
       />
-      {readOnly && <p className="notice notice-info">Salt okunur yayında tarama başlatılamaz; kayıtlı ilanlar gösterilir.</p>}
       {start.error && <p className="notice notice-bad" role="alert">{start.error.message}</p>}
       {running && sync.data?.progress && (
         <p className="notice notice-info" role="status">
@@ -69,12 +64,19 @@ export default function SourcesPage() {
               {source.last_error && <p className="source-error">{source.last_error}</p>}
               {source.failed_items.length > 0 && (
                 <details className="failed-items">
-                  <summary>Ayrıntısı okunamayan {source.failed_items.length} ilan (havuzda duruyor, sonraki taramada yeniden denenir)</summary>
+                  <summary>Ayrıntısı okunamayan {source.failed_items.length} ilan (ilan havuzunda “Doğrulanmalı” olarak duruyor)</summary>
                   <ul>
                     {source.failed_items.map((item) => (
-                      <li key={item.job_id}><button type="button" className="link-button" onClick={() => open(item.job_id)}>{item.title}</button></li>
+                      <li key={item.job_id}>
+                        <button type="button" className="link-button" onClick={() => open(item.job_id)}>{item.title}</button>
+                        <span>{item.reason}</span>
+                        <button type="button" className="button button-small" disabled={retry.isPending} onClick={() => retry.mutate(item.job_id)}>
+                          {retry.isPending && retry.variables === item.job_id ? "Okunuyor…" : "OCR'la yeniden dene"}
+                        </button>
+                      </li>
                     ))}
                   </ul>
+                  {retry.data && <p className="hint">{retry.data.status === "failed" ? `Okunamadı: ${retry.data.error}` : "Belge okundu; ilan yeniden değerlendirildi."}</p>}
                 </details>
               )}
               <a className="text-link" href={source.url} target="_blank" rel="noreferrer">Resmî siteyi aç <ExternalLink size={14} /></a>

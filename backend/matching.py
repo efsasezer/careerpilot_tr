@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
+import json
 import re
 
 from sqlalchemy import func, select
@@ -15,7 +17,10 @@ from .eligibility import (
     detect_recruitment_method,
     normalize_text,
 )
-from .models import CandidateProfile, DocumentPosition, Job, JobDocument, JobDocumentScan
+from .models import (
+    CandidateProfile, DocumentPosition, Job, JobDocument, JobDocumentScan, JobEvent,
+    UserJobState, UserVerification,
+)
 from .sync import _role_words, organization_key
 
 CATEGORY_ORDER = {"UYGUN": 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2}
@@ -100,15 +105,16 @@ def decompose_job_positions(job: Job, documents: list[JobDocument], positions_by
             base["description"] = "\n".join(filter(None, (base["description"], *extra)))[:120_000]
         return [base]
 
-    result, seen = [], set()
+    # Aynı tablo iki ayrı ekte yer alıyorsa satırlar bir kez sayılır; aynı belgedeki
+    # nitelikleri aynı iki kadro (ör. farklı dereceler) ise ayrı kadrolardır.
+    result, seen = [], {}
     for document, row in rows:
         title = row.position_title or row.education_requirement or "Kadro satırı"
         key = normalize_text("|".join((
             title, row.education_requirement, row.quota, row.kpss_score_type, str(row.kpss_min_score), row.city,
         )))
-        if key in seen:
+        if seen.setdefault(key, document.id) != document.id:
             continue
-        seen.add(key)
         result.append({
             **base,
             "sub_id": f"{job.id}-document-{document.id}-{row.row_index}",
@@ -255,6 +261,60 @@ def _duplicate_groups(jobs: list[Job]) -> tuple[set[int], dict[int, list[Job]]]:
     return hidden, copies
 
 
+DECISION_CATEGORY = {"eligible": "UYGUN", "not_eligible": "UYGUN DEĞİL"}
+
+
+def job_content_version(job: Job, documents: list[JobDocument], positions_by_document: dict) -> tuple[str, dict]:
+    """İlanın metni, kadro tablosu ve tarihlerinin özeti. Elle doğrulama bu sürüme bağlanır."""
+    rows = [
+        "|".join(str(value or "") for value in (
+            row.position_title, row.education_requirement, row.quota, row.kpss_score_type, row.kpss_min_score, row.city,
+        ))
+        for document in documents for row in positions_by_document.get(document.id, [])
+    ]
+    snapshot = {
+        "title": job.title or "",
+        "application_start": job.application_start.isoformat() if job.application_start else None,
+        "application_deadline": job.application_deadline.isoformat() if job.application_deadline else None,
+        "text_hash": sha256((job.description or "").encode("utf-8")).hexdigest(),
+        "positions_hash": sha256("\n".join(rows).encode("utf-8")).hexdigest(),
+        "position_count": len(rows),
+        "status": job.status or "",
+    }
+    digest = sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return digest, snapshot
+
+
+_CHANGE_LABELS = {
+    "title": "başlık", "application_start": "başvuru başlangıcı", "application_deadline": "son başvuru tarihi",
+    "text_hash": "ilan metni", "positions_hash": "kadro tablosu", "position_count": "kadro sayısı", "status": "ilan durumu",
+}
+
+
+def content_changes(old_snapshot: str, current: dict) -> list[str]:
+    try:
+        old = json.loads(old_snapshot or "{}")
+    except ValueError:
+        old = {}
+    changes = []
+    for key, label in _CHANGE_LABELS.items():
+        if key in old and old[key] != current.get(key):
+            if key in ("application_start", "application_deadline"):
+                changes.append(f"{label}: {old[key] or 'yok'} → {current.get(key) or 'yok'}")
+            else:
+                changes.append(label)
+    return changes or ["ilan içeriği"]
+
+
+def _preference_status(profile: dict, preferred: list[str], *texts: str) -> tuple[bool | None, bool]:
+    """(tercih edilen şehirde mi, tercih dışı mı). Resmî uygunluğu değiştirmez."""
+    match = location_match(preferred, *texts)
+    haystack = normalize_text(" ".join(text or "" for text in texts))
+    excluded = [normalize_text(str(item)).strip() for item in (profile.get("preferences") or {}).get("excluded", []) if str(item).strip()]
+    unwanted = any(re.search(rf"(?<![a-z]){re.escape(word)}(?![a-z])", haystack) for word in excluded)
+    return match, bool(unwanted or match is False)
+
+
 _CACHE: dict[tuple, dict] = {}
 
 
@@ -269,11 +329,18 @@ def _data_version(db: Session, profile) -> tuple:
     documents = db.execute(select(func.count(JobDocument.id), func.max(JobDocument.checked_at))).one()
     positions = db.scalar(select(func.count(DocumentPosition.id)))
     tracked = db.execute(
-        select(Job.id, Job.tracking, Job.status, Job.cancellation_notice)
-        .where((Job.tracking != "") | (Job.status == "İptal edildi") | (Job.cancellation_notice != "")).order_by(Job.id)
+        select(Job.id, Job.status, Job.cancellation_notice)
+        .where((Job.status == "İptal edildi") | (Job.cancellation_notice != "")).order_by(Job.id)
     ).all()
+    user_side = (
+        db.execute(select(func.count(UserJobState.job_id), func.max(UserJobState.updated_at))).one(),
+        db.execute(select(func.count(UserVerification.id), func.max(UserVerification.verified_at))).one(),
+        db.execute(select(func.count(JobEvent.id), func.max(JobEvent.updated_at))).one(),
+    )
     return (
-        tuple(jobs), tuple(documents), positions, tuple(map(tuple, tracked)),
+        tuple(jobs), tuple(documents), positions, tuple(map(tuple, tracked)), tuple(map(tuple, user_side)),
+        getattr(profile, "educations", None), getattr(profile, "experiences", None), getattr(profile, "preferences", None),
+        getattr(profile, "birth_date", None), getattr(profile, "experience_state", None),
         getattr(profile, "updated_at", None), getattr(profile, "kpss_scores", None), getattr(profile, "department", None),
     )
 
@@ -292,6 +359,14 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
             return _CACHE[cache_key]
     profile = build_candidate_profile(stored_profile)
     preferred = _preferred_cities(profile)
+    preferred += [
+        normalize_text(str(city)).strip() for city in (profile.get("preferences") or {}).get("cities", [])
+        if str(city).strip() and normalize_text(str(city)).strip() not in preferred
+    ]
+    states = {state.job_id: state for state in db.scalars(select(UserJobState)).all()}
+    verifications: dict[int, dict[str, UserVerification]] = {}
+    for record in db.scalars(select(UserVerification)).all():
+        verifications.setdefault(record.job_id, {})[record.position_id] = record
 
     jobs = list(db.scalars(
         select(Job).where(Job.sector == "public", Job.archived_reason == "").order_by(Job.id.desc())
@@ -351,15 +426,39 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
         also_listed = [
             {"source_name": other.source_name, "source_url": other.source_url or None} for other in duplicates
         ]
-        tracking = job.tracking or next((other.tracking for other in duplicates if other.tracking), "")
+        state = states.get(job.id) or next((states[other.id] for other in duplicates if other.id in states), None)
+        tracking = state.tracking if state else ""
+        notes = state.notes if state else ""
+        job_verifications = verifications.get(job.id, {})
+        content_hash, snapshot = job_content_version(job, job_documents, positions_by_document)
+        ocr_scores = [d.ocr_confidence for d in job_documents if d.ocr_confidence is not None]
+        reference_date = job.application_deadline or job.application_start or today
         unread_documents = [d for d in job_documents if d.status in ("unavailable", "unreadable", "partially_read")]
         for position in decompose_job_positions(job, job_documents, positions_by_document):
             # Birincil kayıtta eksik olan tarih/şehir bilgisi diğer kaynaktaki kopyadan tamamlanır.
             for field in ("application_deadline", "application_start", "city"):
                 if not position[field]:
                     position[field] = next((getattr(other, field) for other in duplicates if getattr(other, field)), None)
+            position["reference_date"] = position["application_deadline"] or reference_date
+            position["ocr"] = bool(ocr_scores)
             match = classify_public_job(position, profile)
-            counts[match["category"]] += 1
+            record = job_verifications.get(position["sub_id"]) or job_verifications.get("")
+            effective = DECISION_CATEGORY[record.decision] if record else match["category"]
+            counts[effective] += 1
+            verification = None
+            if record:
+                stale = bool(record.content_hash) and record.content_hash != content_hash
+                verification = {
+                    "decision": record.decision,
+                    "scope": "position" if record.position_id else "job",
+                    "note": record.note,
+                    "verified_at": record.verified_at.isoformat(timespec="minutes") if record.verified_at else None,
+                    "stale": stale,
+                    "changes": content_changes(record.content_snapshot, snapshot) if stale else [],
+                }
+            in_preference, out_of_preference = _preference_status(
+                profile, preferred, position["city"] or "", job.organization, job.title,
+            )
             status = "İptal Edildi" if cancelled else detect_application_status(
                 position["application_start"], position["application_deadline"], today,
             )
@@ -390,20 +489,28 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
                 "qualification_codes": position["qualification_codes"] or ", ".join(match["qualification_codes"]),
                 "kpss_score_type": position["kpss_score_type"] or "/".join(match["kpss"]["score_types"]),
                 "kpss_min_score": position["kpss_min_score"] if position["kpss_min_score"] is not None else match["kpss"]["minimum_score"],
-                "location_match": location_match(preferred, position["city"] or "", job.organization, job.title),
+                "location_match": in_preference,
+                "out_of_preference": out_of_preference,
+                # Sistem kararı ile kullanıcının kararı ayrı tutulur; geçerli olan kullanıcının kararıdır.
+                "system_category": match["category"],
+                "category": effective,
+                "verification": verification,
+                "ocr_confidence": min(ocr_scores) if ocr_scores else None,
                 "tracking": tracking,
                 # Veri/belge durumu, uygunluk kategorisinden bağımsız gösterilir.
                 "data_status": (
-                    "listing_only" if match["data_quality"] == "listing_only"
+                    "ocr" if ocr_scores
+                    else "listing_only" if match["data_quality"] == "listing_only"
                     else "partial" if unread_documents else "read"
                 ),
                 "review_required": (
-                    match["category"] == "POTANSİYEL OLARAK UYGUN" or match["data_quality"] == "listing_only"
+                    (record is None and (match["category"] == "POTANSİYEL OLARAK UYGUN" or match["data_quality"] == "listing_only"))
                     or bool(job.cancellation_notice and not cancelled)
+                    or bool(verification and verification["stale"])
                 ),
                 "cancellation_notice": job.cancellation_notice or "",
                 "basis": position.get("basis"),
-                "notes": job.notes or "",
+                "notes": notes,
                 "first_seen": _iso(job.created_at),
                 "written_exam_invite_text": position.get("written_exam_invite_text") or "",
                 "written_exam_invite_count": position.get("written_exam_invite_count"),
@@ -456,19 +563,26 @@ def job_summaries(matches: dict) -> list[dict]:
             "days_left": item["days_left"],
             "tracking": item["tracking"],
             "location_match": item["location_match"],
-            "category": item["match"]["category"],
+            "category": item["category"],
             "data_quality": item["match"]["data_quality"],
             "kind": item["match"]["kind"],
+            "verified": item["verification"] is not None,
+            "stale": bool(item["verification"] and item["verification"]["stale"]),
+            "stale_changes": (item["verification"] or {}).get("changes", []),
             "education_met": False,
             "positions": [],
         })
-        if CATEGORY_ORDER[item["match"]["category"]] < CATEGORY_ORDER[summary["category"]]:
-            summary["category"] = item["match"]["category"]
+        if CATEGORY_ORDER[item["category"]] < CATEGORY_ORDER[summary["category"]]:
+            summary["category"] = item["category"]
             summary["data_quality"] = item["match"]["data_quality"]
-        if item["match"]["education"]["status"] == "met" and item["match"]["category"] != "UYGUN DEĞİL":
+        if item["verification"] is not None:
+            summary["verified"] = True
+        if item["verification"] and item["verification"]["stale"]:
+            summary["stale"], summary["stale_changes"] = True, item["verification"]["changes"]
+        if item["match"]["education"]["status"] == "met" and item["category"] != "UYGUN DEĞİL":
             summary["education_met"] = True
         if item["location_match"]:
             summary["location_match"] = True
-        if item["match"]["category"] != "UYGUN DEĞİL":
+        if item["category"] != "UYGUN DEĞİL":
             summary["positions"].append(item["position"])
     return list(grouped.values())

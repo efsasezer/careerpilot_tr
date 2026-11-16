@@ -1,86 +1,49 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { apiRequest, getApiUrl } from "./client";
+import { apiRequest } from "./client";
 
 interface AuthContextValue {
-  token: string | null;
+  authenticated: boolean;
   isChecking: boolean;
-  signIn: (token: string, remember: boolean) => Promise<void>;
-  signOut: () => void;
+  configError: string | null;
+  signIn: (password: string) => Promise<void>;
+  signOut: () => Promise<void>;
 }
 
-const STORAGE_KEY = "careerpilot.accessKey";
-const LOCAL_TOKEN = "yerel";
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function readStoredToken(): string | null {
-  try {
-    return sessionStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function clearStoredToken() {
-  try {
-    sessionStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* depolama kapalıysa yapılacak bir şey yok */
-  }
-}
-
+/** Oturum sunucuda tutulur; tarayıcıda yalnızca JavaScript'in okuyamadığı (HttpOnly) çerez bulunur. */
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
+  const [configError, setConfigError] = useState<string | null>(null);
 
-  // Sayfa yenilendiğinde saklanan anahtarı sunucuda doğrulayarak oturumu geri yükle.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const stored = readStoredToken();
-      try {
-        if (stored) {
-          await apiRequest("/auth/check", stored);
-          if (!cancelled) setToken(stored);
-          return;
-        }
-        // Yerel geliştirmede sunucu anahtar istemiyorsa giriş ekranı atlanır.
-        const health = await fetch(`${getApiUrl()}/health`).then((response) => response.json());
-        if (!cancelled && health.auth_required === false) {
-          await apiRequest("/auth/check", LOCAL_TOKEN);
-          if (!cancelled) setToken(LOCAL_TOKEN);
-        }
-      } catch {
-        if (stored) clearStoredToken();
-      } finally {
-        if (!cancelled) setIsChecking(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    apiRequest<{ authenticated: boolean; config_error: string | null }>("/auth/me")
+      .then((state) => {
+        setAuthenticated(state.authenticated);
+        setConfigError(state.config_error);
+      })
+      .catch(() => setAuthenticated(false))
+      .finally(() => setIsChecking(false));
+    const expired = () => setAuthenticated(false);
+    window.addEventListener("careerpilot:unauthorized", expired);
+    return () => window.removeEventListener("careerpilot:unauthorized", expired);
   }, []);
 
-  const signIn = useCallback(async (value: string, remember: boolean) => {
-    setIsChecking(true);
-    try {
-      await apiRequest("/auth/check", value);
-      clearStoredToken();
-      try {
-        (remember ? localStorage : sessionStorage).setItem(STORAGE_KEY, value);
-      } catch {
-        /* yalnızca bellekte tutulur */
-      }
-      setToken(value);
-    } finally {
-      setIsChecking(false);
-    }
+  const signIn = useCallback(async (password: string) => {
+    await apiRequest("/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+    setAuthenticated(true);
   }, []);
 
-  const signOut = useCallback(() => {
-    clearStoredToken();
-    setToken(null);
+  const signOut = useCallback(async () => {
+    await apiRequest("/auth/logout", { method: "POST" }).catch(() => undefined);
+    setAuthenticated(false);
   }, []);
 
-  const value = useMemo(() => ({ token, isChecking, signIn, signOut }), [token, isChecking, signIn, signOut]);
+  const value = useMemo(
+    () => ({ authenticated, isChecking, configError, signIn, signOut }),
+    [authenticated, isChecking, configError, signIn, signOut],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

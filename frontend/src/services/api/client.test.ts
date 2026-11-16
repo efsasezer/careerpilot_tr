@@ -4,28 +4,23 @@ import { apiRequest } from "./client";
 describe("apiRequest", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("sends the private API token in the Authorization header", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ authenticated: true }), { status: 200 }),
-    );
+  it("sends the session cookie and never an Authorization header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(apiRequest("/auth/check", "session-secret")).resolves.toEqual({ authenticated: true });
+    await expect(apiRequest("/profile")).resolves.toEqual({ ok: true });
 
-    expect(fetchMock.mock.calls[0][1].headers.get("Authorization")).toBe("Bearer session-secret");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/profile");
+    expect(init.credentials).toBe("include");
+    expect(init.headers.has("Authorization")).toBe(false);
   });
 
-  it("surfaces API authorization failures", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ detail: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      }),
-    ));
-
-    await expect(apiRequest("/profile", "wrong-token")).rejects.toMatchObject({
-      status: 401,
-      message: "Unauthorized",
+  it("shows a meaningful message when a write fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("oops", { status: 500 })));
+    await expect(apiRequest("/profile", { method: "PUT", body: "{}" })).rejects.toMatchObject({
+      status: 500,
+      message: "Kaydedilemedi, tekrar dene.",
     });
   });
 });

@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
-import { Bookmark, CheckCheck, ExternalLink, EyeOff, X } from "lucide-react";
+import { Bookmark, CalendarPlus, CheckCheck, ExternalLink, EyeOff, FileText, Trash2, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import { CategoryBadge, DataStatusChip, DeadlineChip, StatusDot } from "../shared/Badges";
+import { CategoryBadge, DataStatusChip, DeadlineChip, STATUS_LABEL, StatusDot } from "../shared/Badges";
 import { QueryState } from "../shared/QueryState";
-import { useHealth, useJobDetail, useSetTracking } from "../../services/api/hooks";
+import { VerifyButtons } from "./VerifyButtons";
+import { getApiUrl } from "../../services/api/client";
+import {
+  useAcknowledgeUpdate, useAddEvent, useDeleteEvent, useJobDetail, useRetryReading, useSetTracking, useSetVerification,
+} from "../../services/api/hooks";
 import type { JobDetail, MatchedPosition, Tracking } from "../../types/api";
-import { formatDate } from "../../utils/format";
+import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp } from "../../utils/format";
 
-const OPTIONAL_REQUIREMENTS: Array<[string, string]> = [
-  ["Yaş", "yaş sınırı"], ["YDS", "yabancı dil puanı"], ["Deneyim", "mesleki deneyim"],
-  ["Sürücü belgesi", "sürücü belgesi"], ["Sertifika", "sertifika"], ["Vardiya", "vardiyalı çalışma"],
-];
 const ORDER = { UYGUN: 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2 } as const;
+const APPLIED_FLOW: Tracking[] = ["applied", "awaiting", "won", "lost"];
 
 export function JobDrawer() {
   const [params, setParams] = useSearchParams();
@@ -50,20 +51,38 @@ export function JobDrawer() {
 }
 
 function DrawerBody({ job }: { job: JobDetail }) {
-  const health = useHealth();
   const tracking = useSetTracking();
-  const readOnly = health.data?.read_only ?? true;
-  const [current, setCurrent] = useState<Tracking>(job.tracking);
+  const verify = useSetVerification();
+  const acknowledge = useAcknowledgeUpdate();
+  const retry = useRetryReading();
   const [notes, setNotes] = useState(job.notes);
-  const positions = [...job.positions].sort((a, b) => ORDER[a.match.category] - ORDER[b.match.category]);
+  const [verifyNote, setVerifyNote] = useState(job.job_verification?.note ?? "");
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState("");
+  const positions = [...job.positions].sort((a, b) => ORDER[a.category] - ORDER[b.category]);
   const [selectedId, setSelectedId] = useState(positions[0].id);
   const selected = positions.find((item) => item.id === selectedId) ?? positions[0];
   const documents = job.document_review?.documents ?? [];
+  const current = job.tracking;
+  const stale = positions.find((item) => item.verification?.stale)?.verification ?? null;
+  const needsManual = selected.data_status === "listing_only" || selected.data_status === "ocr";
+  const hasResultDate = job.events.some((event) => event.kind === "result");
+
+  useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl); }, [pdfUrl]);
 
   function setTracking(value: Tracking) {
-    const next = current === value ? "" : value;
-    setCurrent(next);
-    tracking.mutate({ jobId: job.id, tracking: next, notes });
+    tracking.mutate({ jobId: job.id, tracking: current === value ? "" : value, notes });
+  }
+
+  async function showPdf() {
+    setPdfError("");
+    try {
+      const response = await fetch(`${getApiUrl()}/jobs/${job.id}/document.pdf`, { credentials: "include" });
+      if (!response.ok) throw new Error((await response.json().catch(() => null))?.detail ?? "PDF alınamadı.");
+      setPdfUrl(URL.createObjectURL(await response.blob()));
+    } catch (error) {
+      setPdfError(error instanceof Error ? error.message : "PDF alınamadı.");
+    }
   }
 
   return (
@@ -71,7 +90,8 @@ function DrawerBody({ job }: { job: JobDetail }) {
       <p className="drawer-org">{job.organization}</p>
       <h2>{job.title}</h2>
       <div className="drawer-chips">
-        <CategoryBadge category={selected.match.category} />
+        <CategoryBadge category={selected.category} />
+        {selected.category === "UYGUN" && selected.out_of_preference && <span className="chip">Tercih dışı</span>}
         <DeadlineChip daysLeft={selected.days_left} status={selected.application_status} />
         <DataStatusChip status={selected.data_status} always />
         {selected.review_required && <span className="chip chip-warn">İnceleme gerekli</span>}
@@ -85,14 +105,24 @@ function DrawerBody({ job }: { job: JobDetail }) {
         </p>
       )}
 
+      {stale && (
+        <div className="notice notice-warn drawer-notice">
+          <div>
+            <strong>İlan güncellendi, doğrulamanı gözden geçir</strong>
+            <p>Değişen: {stale.changes.join(", ")}. Kararınız korunuyor ve siz değiştirmedikçe değişmez.</p>
+          </div>
+          <button className="button button-small" disabled={acknowledge.isPending} onClick={() => acknowledge.mutate(job.id)}>Gözden geçirdim, karar geçerli</button>
+        </div>
+      )}
+
       <div className="drawer-actions">
-        <button className={`button ${current === "saved" ? "button-active" : ""}`} disabled={readOnly} onClick={() => setTracking("saved")}>
+        <button className={`button ${current === "saved" ? "button-active" : ""}`} onClick={() => setTracking("saved")}>
           <Bookmark size={16} /> {current === "saved" ? "Kaydedildi" : "Kaydet"}
         </button>
-        <button className={`button ${current === "applied" ? "button-active" : ""}`} disabled={readOnly} onClick={() => setTracking("applied")}>
-          <CheckCheck size={16} /> {current === "applied" ? "Başvuruldu" : "Başvurdum"}
+        <button className={`button ${APPLIED_FLOW.includes(current) ? "button-active" : ""}`} onClick={() => setTracking("applied")}>
+          <CheckCheck size={16} /> {APPLIED_FLOW.includes(current) ? "Başvuruldu" : "Başvurdum"}
         </button>
-        <button className={`button ${current === "hidden" ? "button-active" : ""}`} disabled={readOnly} onClick={() => setTracking("hidden")}>
+        <button className={`button ${current === "hidden" ? "button-active" : ""}`} onClick={() => setTracking("hidden")}>
           <EyeOff size={16} /> {current === "hidden" ? "Gizlendi" : "İlgilenmiyorum"}
         </button>
         {job.source_url && (
@@ -101,32 +131,82 @@ function DrawerBody({ job }: { job: JobDetail }) {
           </a>
         )}
       </div>
-      {job.source_name === "SBB Kamu İlanları" && (
-        <p className="hint">SBB ilan bağlantıları oturuma özeldir; açılan listede kurum adını arayın. İlanın resmî metni aşağıda yer alıyor.</p>
+      {tracking.error && <p className="field-error" role="alert">{tracking.error.message}</p>}
+      {APPLIED_FLOW.includes(current) && (
+        <div className="flow">
+          <span>Başvuru durumu:</span>
+          {APPLIED_FLOW.map((step) => (
+            <button key={step} className={`chip chip-button ${current === step ? "chip-accent" : ""}`} onClick={() => tracking.mutate({ jobId: job.id, tracking: step, notes })}>
+              {TRACKING_LABEL[step]}
+            </button>
+          ))}
+        </div>
+      )}
+      {APPLIED_FLOW.includes(current) && !hasResultDate && <AddEvent jobId={job.id} prompt="Sonuç tarihi eklemek ister misin?" kind="result" />}
+
+      <section className="drawer-section">
+        <h3>Kendi kararınız</h3>
+        <p className="muted">
+          Sistem: {CATEGORY_LABEL[selected.system_category]} · Siz: {job.job_verification ? (job.job_verification.decision === "eligible" ? "Uygun" : "Uygun değil") : "Henüz bakmadım"}
+          {job.job_verification?.verified_at ? ` (${formatTimestamp(job.job_verification.verified_at)})` : ""}
+        </p>
+        <VerifyButtons jobId={job.id} verification={job.job_verification} note={verifyNote} />
+        <label className="field verify-note">
+          <span>Kısa not (isteğe bağlı)</span>
+          <input value={verifyNote} onChange={(event) => setVerifyNote(event.target.value)} placeholder="Neye bakarak karar verdiniz?"
+            onBlur={() => job.job_verification && verifyNote !== job.job_verification.note
+              && verify.mutate({ jobId: job.id, decision: job.job_verification.decision, note: verifyNote })} />
+        </label>
+        <p className="hint">Kararınız sistemin hesabından ayrı saklanır; yeniden tarama ve profil değişikliği kararınızı değiştirmez.</p>
+      </section>
+
+      {(needsManual || job.has_pdf) && (
+        <section className="drawer-section">
+          <h3>Resmî belge</h3>
+          {selected.data_status === "listing_only" && <p className="notice notice-warn">İlan metni otomatik okunamadı (taranmış PDF olabilir). Tahminle karar verilmedi; PDF'i açıp yukarıdan elle doğrulayın.</p>}
+          {selected.data_status === "ocr" && <p className="notice notice-warn">Bu ilan taranmış PDF'ten OCR ile okundu (güven %{Math.round((selected.ocr_confidence ?? 0) * 100)}). Harf ve sayılar hatalı olabilir; PDF ile karşılaştırıp elle doğrulayın.</p>}
+          <div className="button-row">
+            {job.has_pdf && <button className="button" onClick={showPdf}><FileText size={16} /> Resmî PDF'i aç</button>}
+            {needsManual && <button className="button" disabled={retry.isPending} onClick={() => retry.mutate(job.id)}>{retry.isPending ? "Okunuyor…" : "OCR'la yeniden dene"}</button>}
+          </div>
+          {retry.data && <p className="hint">{retry.data.status === "failed" ? `Okunamadı: ${retry.data.error}` : retry.data.status === "ocr" ? "OCR ile okundu; şartları kontrol edin." : "Belge okundu."}</p>}
+          {pdfError && <p className="field-error" role="alert">{pdfError}</p>}
+          {pdfUrl && <iframe className="pdf-frame" src={pdfUrl} title="Resmî ilan PDF'i" />}
+        </section>
       )}
 
       {positions.length > 1 && (
         <section className="drawer-section">
-          <h3>Pozisyonlar ({positions.length})</h3>
+          <h3>Kadrolar ({positions.length})</h3>
           <div className="position-list">
             {positions.map((item) => (
               <button key={item.id} className={`position-row ${item.id === selected.id ? "position-row-active" : ""}`} onClick={() => setSelectedId(item.id)}>
-                <span>{item.position}</span>
-                <CategoryBadge category={item.match.category} />
+                <span>{item.position}{item.quota ? ` · ${item.quota} kişi` : ""}</span>
+                <CategoryBadge category={item.category} />
               </button>
             ))}
           </div>
         </section>
       )}
 
-      <PositionDetail position={selected} showTitle={positions.length > 1} />
+      <PositionDetail jobId={job.id} position={selected} multiple={positions.length > 1} />
+
+      <section className="drawer-section">
+        <h3>Tarihler</h3>
+        {job.events.length ? (
+          <ul className="event-list">
+            {job.events.map((event) => <EventRow key={event.id} event={event} />)}
+          </ul>
+        ) : <p className="muted">İlan metninde tarih belirtilmemiş. Tahmini tarih üretilmez.</p>}
+        <AddEvent jobId={job.id} prompt="Tarih ekle" kind="exam" />
+      </section>
 
       <section className="drawer-section">
         <h3>Notlarım</h3>
         <label className="sr-only" htmlFor="job-notes">İlan notu</label>
-        <textarea id="job-notes" rows={3} value={notes} disabled={readOnly} onChange={(event) => setNotes(event.target.value)}
+        <textarea id="job-notes" rows={3} value={notes} onChange={(event) => setNotes(event.target.value)}
           onBlur={() => notes !== job.notes && tracking.mutate({ jobId: job.id, tracking: current, notes })}
-          placeholder={readOnly ? "Salt okunur modda not eklenemez" : "Hazırlanacak belgeler, hatırlatmalar…"} />
+          placeholder="Hazırlanacak belgeler, hatırlatmalar…" />
       </section>
 
       {(documents.length > 0 || selected.also_listed.length > 0) && (
@@ -136,7 +216,7 @@ function DrawerBody({ job }: { job: JobDetail }) {
             {documents.map((document) => (
               <li key={document.id}>
                 <a href={document.url} target="_blank" rel="noreferrer">{document.title || "Resmî belge"} <ExternalLink size={13} /></a>
-                <span>{document.status === "read" ? "Okundu" : document.status === "partially_read" ? "Kısmen okundu" : "Otomatik okunamadı, bağlantıdan açın"}</span>
+                <span>{document.status === "read" ? "Okundu" : document.status === "ocr" ? "OCR ile okundu, kontrol edin" : document.status === "partially_read" ? "Kısmen okundu" : "Otomatik okunamadı, bağlantıdan açın"}</span>
               </li>
             ))}
             {selected.also_listed.map((other) => (
@@ -160,7 +240,45 @@ function DrawerBody({ job }: { job: JobDetail }) {
   );
 }
 
-function PositionDetail({ position, showTitle }: { position: MatchedPosition; showTitle: boolean }) {
+function EventRow({ event }: { event: JobDetail["events"][number] }) {
+  const remove = useDeleteEvent();
+  return (
+    <li>
+      <div>
+        <strong>{event.label}</strong>
+        <span>
+          {formatDate(event.date)}{event.end_date ? ` – ${formatDate(event.end_date)}` : ""}{event.time ? ` · ${event.time}` : " · tüm gün"}
+          {event.previous_date ? ` (önceki: ${formatDate(event.previous_date)})` : ""}
+        </span>
+        {event.url && <a href={event.url} target="_blank" rel="noreferrer">{event.url.replace(/^https?:\/\//, "")} <ExternalLink size={12} /></a>}
+        {event.evidence && <details><summary>Bu bilgi nereden alındı?</summary><p>{event.evidence}</p></details>}
+      </div>
+      <button className="icon-button" aria-label={`${event.label} olayını sil`} disabled={remove.isPending} onClick={() => remove.mutate(event.id)}><Trash2 size={16} /></button>
+    </li>
+  );
+}
+
+function AddEvent({ jobId, prompt, kind }: { jobId: number; prompt: string; kind: string }) {
+  const add = useAddEvent();
+  const [open, setOpen] = useState(false);
+  const [selectedKind, setSelectedKind] = useState(kind);
+  const [day, setDay] = useState("");
+  if (!open) return <button className="text-button" onClick={() => setOpen(true)}><CalendarPlus size={15} /> {prompt}</button>;
+  return (
+    <form className="inline-form" onSubmit={(event) => { event.preventDefault(); if (day) add.mutate({ jobId, kind: selectedKind, event_date: day }, { onSuccess: () => { setOpen(false); setDay(""); } }); }}>
+      <select aria-label="Olay türü" value={selectedKind} onChange={(event) => setSelectedKind(event.target.value)}>
+        <option value="exam">Sınav</option><option value="interview">Sözlü / mülakat</option><option value="result">Sonuç açıklanacak</option>
+        <option value="documents">Evrak teslimi</option><option value="appointment">Atama</option>
+      </select>
+      <input type="date" aria-label="Tarih" value={day} onChange={(event) => setDay(event.target.value)} required />
+      <button className="button button-small button-primary" disabled={add.isPending}>Ekle</button>
+      <button type="button" className="button button-small" onClick={() => setOpen(false)}>Vazgeç</button>
+      {add.error && <span className="field-error" role="alert">{add.error.message}</span>}
+    </form>
+  );
+}
+
+function PositionDetail({ jobId, position, multiple }: { jobId: number; position: MatchedPosition; multiple: boolean }) {
   const facts: Array<[string, string | null]> = [
     ["Başvuru", position.application_start || position.application_deadline
       ? `${formatDate(position.application_start, "?")} – ${formatDate(position.application_deadline, "?")}` : null],
@@ -170,25 +288,31 @@ function PositionDetail({ position, showTitle }: { position: MatchedPosition; sh
     ["Alım yöntemi", position.recruitment_method === "Kaynakta belirtilmedi" ? null : position.recruitment_method],
     ["İstihdam türü", position.employment_type === "Kaynakta belirtilmedi" ? null : position.employment_type],
   ];
-  const named = new Set(position.match.requirements.map((item) => item.name));
-  const notRequired = position.data_status === "listing_only" || position.match.kind === "academic"
-    ? []
-    : OPTIONAL_REQUIREMENTS.filter(([name]) => !named.has(name)).map(([, label]) => label);
+  const checked = position.match.requirements.filter((item) => item.status !== "not_required");
+  const notRequired = position.match.requirements.filter((item) => item.status === "not_required");
   return (
     <>
       <section className="drawer-section">
-        <h3>{showTitle ? position.position : "Şartlar ve profiliniz"}</h3>
+        <h3>{multiple ? `${position.position}: şartlar ve profiliniz` : "Şartlar ve profiliniz"}</h3>
+        {multiple && (
+          <div className="position-verify">
+            <span className="muted">Bu kadro için kararınız:</span>
+            <VerifyButtons jobId={jobId} positionId={position.id} verification={position.verification?.scope === "position" ? position.verification : null} compact />
+          </div>
+        )}
         <ul className="requirement-list">
-          {position.match.requirements.map((item, index) => (
+          {checked.map((item, index) => (
             <li key={`${item.name}-${index}`}>
               <StatusDot status={item.status} />
-              <div><strong>{item.name}</strong><p>{item.detail}</p></div>
+              <div>
+                <strong>{item.name} <span className={`status-text status-${item.status}`}>{STATUS_LABEL[item.status]}</span></strong>
+                <p>{item.detail}</p>
+                {item.evidence && <blockquote>“{item.evidence}”</blockquote>}
+              </div>
             </li>
           ))}
         </ul>
-        {notRequired.length > 0 && (
-          <p className="hint">İlan metninde aranmıyor: {notRequired.join(", ")}.</p>
-        )}
+        {notRequired.length > 0 && <p className="hint">İlan metninde aranmıyor: {notRequired.map((item) => item.name).join(", ")}.</p>}
         {position.basis && (
           <p className="hint">
             Dayanak: <a href={position.basis.document_url} target="_blank" rel="noreferrer">{position.basis.document_title}</a>, kadro tablosu {position.basis.table_row}. satır.
@@ -196,12 +320,10 @@ function PositionDetail({ position, showTitle }: { position: MatchedPosition; sh
         )}
         {position.match.kpss.status === "met" && (
           <p className="hint">
-            Taban puanı karşılamak yalnızca başvuru şartıdır; sınava çağrılma{position.written_exam_invite_count ? ` (kontenjanın ${position.written_exam_invite_count} katı aday)` : ""} ve yerleşme ayrıca puan sıralamasına bağlıdır.
+            Taban puanı karşılamak yalnızca başvuru şartıdır; sınava çağrılma{position.written_exam_invite_count ? ` (kontenjanın ${position.written_exam_invite_count} katı aday)` : ""} ve yerleşme puan sıralamasına bağlıdır.
           </p>
         )}
-        {position.match.general_conditions.length > 0 && (
-          <p className="hint">Genel şartlar: {position.match.general_conditions.join(", ")}.</p>
-        )}
+        {position.match.general_conditions.length > 0 && <p className="hint">Genel şartlar: {position.match.general_conditions.join(", ")}.</p>}
       </section>
       <section className="drawer-section">
         <h3>İlan bilgileri</h3>

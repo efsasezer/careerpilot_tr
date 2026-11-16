@@ -1,6 +1,6 @@
 export type MatchCategory = "UYGUN" | "POTANSİYEL OLARAK UYGUN" | "UYGUN DEĞİL";
-export type RequirementStatus = "met" | "not_met" | "unknown";
-export type Tracking = "" | "saved" | "applied" | "hidden";
+export type RequirementStatus = "met" | "not_met" | "unknown" | "not_required";
+export type Tracking = "" | "saved" | "applied" | "awaiting" | "won" | "lost" | "hidden";
 
 export interface Profile {
   id: number;
@@ -10,6 +10,13 @@ export interface Profile {
   faculty: string;
   gender: string;
   special_status: string;
+  birth_date: string | null;
+  military_status: string;
+  educations: Array<{ level: string; school: string; department: string; year: string }>;
+  experiences: Array<{ organization: string; position: string; start: string; end: string }>;
+  experience_state: "" | "none" | "has";
+  foreign_language: string;
+  preferences: { cities?: string[]; institution_types?: string[]; keywords?: string[]; excluded?: string[] };
   university: string;
   kpss_score_type: string;
   kpss_p3: number | null;
@@ -35,6 +42,16 @@ export interface Requirement {
   name: string;
   status: RequirementStatus;
   detail: string;
+  evidence: string;
+}
+
+export interface Verification {
+  decision: "eligible" | "not_eligible";
+  scope: "job" | "position";
+  note: string;
+  verified_at: string | null;
+  stale: boolean;
+  changes: string[];
 }
 
 export interface MatchDetail {
@@ -82,7 +99,13 @@ export interface MatchedPosition {
   kpss_min_score: number | null;
   location_match: boolean | null;
   tracking: Tracking;
-  data_status: "read" | "partial" | "listing_only";
+  /** Geçerli kategori: kullanıcının kararı varsa o, yoksa sistemin kararı. */
+  category: MatchCategory;
+  system_category: MatchCategory;
+  verification: Verification | null;
+  out_of_preference: boolean;
+  ocr_confidence: number | null;
+  data_status: "read" | "partial" | "listing_only" | "ocr";
   review_required: boolean;
   cancellation_notice: string;
   basis: { document_title: string; document_url: string; table_row: number } | null;
@@ -120,6 +143,72 @@ export interface OfficialDocument {
   error: string;
 }
 
+export interface JobEvent {
+  id: number;
+  job_id: number;
+  kind: string;
+  label: string;
+  date: string;
+  end_date: string | null;
+  time: string;
+  evidence: string;
+  url: string;
+  source: "auto" | "user";
+  user_edited: boolean;
+  previous_date: string | null;
+}
+
+export interface CalendarEvent extends JobEvent {
+  organization: string;
+  job_title: string;
+  category: MatchCategory;
+  tracking: Tracking;
+  cancelled: boolean;
+}
+
+export interface TaskOccurrence {
+  task_id: number;
+  title: string;
+  description: string;
+  date: string;
+  start_time: string;
+  end_time: string;
+  priority: "low" | "normal" | "high";
+  recurrence: string;
+  done: boolean;
+}
+
+export interface CalendarData {
+  events: CalendarEvent[];
+  tasks: TaskOccurrence[];
+}
+
+export interface TaskInput {
+  title: string;
+  description: string;
+  task_date: string;
+  start_time: string;
+  end_time: string;
+  priority: "low" | "normal" | "high";
+  recurrence: "none" | "daily" | "weekly" | "weekdays" | "monthly";
+  weekdays: number[];
+  until: string | null;
+}
+
+export interface Task extends TaskInput {
+  id: number;
+  completed_dates: string[];
+}
+
+export interface EventInput {
+  kind: string;
+  event_date: string;
+  end_date?: string | null;
+  event_time?: string;
+  title?: string;
+  url?: string;
+}
+
 export interface JobDetail {
   id: number;
   title: string;
@@ -130,6 +219,9 @@ export interface JobDetail {
   document_review: { status: string; error: string; documents: OfficialDocument[] } | null;
   tracking: Tracking;
   notes: string;
+  has_pdf: boolean;
+  events: JobEvent[];
+  job_verification: Verification | null;
   positions: MatchedPosition[];
 }
 
@@ -145,7 +237,7 @@ export interface Source {
   last_created: number;
   last_updated: number;
   last_unchanged: number;
-  failed_items: Array<{ job_id: number; title: string; url: string }>;
+  failed_items: Array<{ job_id: number; title: string; url: string; scanned: boolean; reason: string }>;
   last_detail_failed: number;
   pages_checked: number;
   last_error: string | null;
@@ -168,7 +260,7 @@ export interface SyncStatus {
 
 export interface AppNotification {
   id: number;
-  kind: "new_match" | "deadline";
+  kind: string;
   job_id: number | null;
   category: string;
   title: string;
@@ -194,12 +286,3 @@ export interface NotificationSettings {
   telegram_available?: boolean;
 }
 
-export interface Health {
-  status: string;
-  app: string;
-  version: string;
-  demo_mode: boolean;
-  read_only: boolean;
-  auth_required: boolean;
-  auto_sync_hours: number;
-}
