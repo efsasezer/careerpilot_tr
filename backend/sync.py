@@ -23,6 +23,7 @@ from .eligibility import (
     normalize_text,
     reflow_text,
 )
+from .events import refresh_all_events, sync_job_events
 from .kariyerkapisi import _label_values
 from .models import Job, JobDocument, JobDocumentScan, SourceListing, SourceSyncHistory
 from .sources.registry import get_source_registry
@@ -211,8 +212,13 @@ def _store_document(db: Session, job: Job, document: dict, checked_at: datetime)
     record.content_hash = record.parsed_content_hash = str(document.get("body_hash") or "")
     record.extracted_text = parsed.get("text") or ""
     record.shared_requirements = parsed.get("shared_requirements") or ""
-    record.status = "partially_read" if parsed.get("partially_read") else "read"
-    record.error = "Belgenin metninde çözümlenemeyen karakterler var." if parsed.get("partially_read") else ""
+    record.ocr_confidence = parsed.get("ocr_confidence")
+    if record.ocr_confidence is not None:
+        record.status = "ocr"
+        record.error = f"Taranmış PDF, OCR ile okundu (güven %{round(record.ocr_confidence * 100)}); kontrol edin."
+    else:
+        record.status = "partially_read" if parsed.get("partially_read") else "read"
+        record.error = "Belgenin metninde çözümlenemeyen karakterler var." if parsed.get("partially_read") else ""
     record.checked_at = checked_at
     db.flush()
     positions = parsed.get("positions") or []
@@ -364,7 +370,8 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
             listing.official_url = detail_url[:1200]
             listing.last_checked_at = checked_at
 
-            needs_detail = created or listing.status != "complete" or listing.list_hash != list_hash
+            # Taranmış ve OCR'la da okunamayan belge her taramada yeniden denenmez ("OCR'la yeniden dene" ile denenir).
+            needs_detail = created or listing.list_hash != list_hash or listing.status not in ("complete", "unreadable")
             if needs_detail:
                 try:
                     details = source.fetch_detail(detail_url)
@@ -382,13 +389,17 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
                         {"listing": item, "detail_keys": sorted(details)}, ensure_ascii=False, sort_keys=True, default=str,
                     )[:20000]
                 except Exception as error:  # tek ilanın hatası taramayı durdurmaz
-                    listing.status = "detail_failed"
+                    from .documents import ScannedDocumentError
+
+                    listing.status = "unreadable" if isinstance(error, ScannedDocumentError) else "detail_failed"
+                    listing.raw_payload = json.dumps({"error": str(error)[:400]}, ensure_ascii=False)
                     report["detail_failed"] += 1
                     report["detail_errors"].append({"url": user_url, "title": job.title, "error": str(error)[:300]})
                     logger.warning("Detail fetch failed for %s: %s", detail_url, error)
                 if delay:
                     time.sleep(delay)
             listing.list_hash = list_hash
+            sync_job_events(db, job)
 
             if created:
                 report["imported"] += 1
@@ -470,6 +481,7 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
 
     from .matching import invalidate_cache
 
+    refresh_all_events(db)
     invalidate_cache()
     notifications = process_notifications(db)
     for report in results.values():
@@ -480,6 +492,98 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
         "document_scan": document_scan,
         "notifications": notifications,
     }
+
+
+def _move_user_data(db: Session, source_id: int, target_id: int) -> None:
+    """Kopya kayıt arşivlenirken kullanıcının takip durumu, notu ve doğrulamaları asıl kayda taşınır."""
+    from .models import UserJobState, UserVerification
+
+    state = db.get(UserJobState, source_id)
+    if state is not None and db.get(UserJobState, target_id) is None:
+        db.add(UserJobState(job_id=target_id, tracking=state.tracking, notes=state.notes, updated_at=state.updated_at))
+        db.delete(state)
+    taken = {item.position_id for item in db.scalars(select(UserVerification).where(UserVerification.job_id == target_id)).all()}
+    for item in db.scalars(select(UserVerification).where(UserVerification.job_id == source_id)).all():
+        if item.position_id == "" and "" not in taken:
+            item.job_id = target_id
+
+
+def _listing_for(db: Session, job: Job) -> SourceListing | None:
+    return db.scalar(select(SourceListing).where(SourceListing.job_id == job.id).order_by(SourceListing.id.desc()).limit(1))
+
+
+def _fresh_detail_url(source, listing: SourceListing) -> str:
+    """Detay bağlantısı oturuma bağlı kaynaklarda (SBB) güncel bağlantıyı listeden bulur."""
+    if listing.source_key != "sbb":
+        return listing.official_url
+    for item in source.fetch_listings():
+        if str(item.get("external_id")) == listing.external_id:
+            return str(item["detail_url"])
+    raise RuntimeError("İlan artık kaynak listesinde görünmüyor.")
+
+
+def refetch_job(db: Session, job: Job) -> dict:
+    """Tek ilanın ayrıntısını (gerekirse OCR ile) yeniden okur. "OCR'la yeniden dene" bunu çağırır."""
+    listing = _listing_for(db, job)
+    if listing is None:
+        raise RuntimeError("Bu ilan bir kaynak taramasından gelmiyor.")
+    source = get_source_registry()[listing.source_key]
+    try:
+        details = source.fetch_detail(_fresh_detail_url(source, listing))
+        if len(str(details.get("source_text") or "").strip()) < 80:
+            raise ValueError("Ayrıştırılabilir ilan metni bulunamadı.")
+        now = datetime.now()
+        _apply_detail(job, {}, details)
+        job.updated_at = now
+        db.flush()
+        if details.get("document"):
+            _store_document(db, job, details["document"], now)
+        listing.status = "complete"
+        listing.content_hash = str(details.get("content_hash") or "")[:64]
+        sync_job_events(db, job)
+        db.commit()
+        confidence = (details.get("document") or {}).get("parsed", {}).get("ocr_confidence")
+        return {"status": "ocr" if confidence is not None else "read", "ocr_confidence": confidence}
+    except Exception as error:
+        from .documents import ScannedDocumentError
+
+        db.rollback()
+        listing.status = "unreadable" if isinstance(error, ScannedDocumentError) else "detail_failed"
+        listing.raw_payload = json.dumps({"error": str(error)[:400]}, ensure_ascii=False)
+        db.commit()
+        return {"status": "failed", "error": str(error)[:300]}
+    finally:
+        close = getattr(source, "close", None)
+        if callable(close):
+            close()
+
+
+def download_official_pdf(db: Session, job: Job) -> bytes:
+    """İlanın resmî PDF'ini kaynağından indirir (uygulama içinde göstermek için; saklanmaz)."""
+    from . import tls
+    from .sources.base import DEFAULT_HEADERS
+
+    listing = _listing_for(db, job)
+    if listing is not None and listing.source_key == "sbb":
+        source = get_source_registry()["sbb"]
+        url = _fresh_detail_url(source, listing)
+        response = source._session.get(url, timeout=(8, 60), headers={**DEFAULT_HEADERS, "Referer": source.base_url})
+        body = response.content
+    else:
+        candidates = [listing.official_url] if listing is not None else []
+        candidates += [doc.document_url for doc in db.scalars(select(JobDocument).where(JobDocument.job_id == job.id)).all()]
+        url = next((item for item in candidates if item and ".pdf" in item.casefold()), None)
+        if url is None:
+            raise RuntimeError("Bu ilanın PDF belgesi yok.")
+        from .documents import fetch_url
+
+        try:
+            body = fetch_url(url)["body"]
+        except Exception:
+            body = tls.get(url, headers=DEFAULT_HEADERS, timeout=(8, 60)).content
+    if not body.startswith(b"%PDF-"):
+        raise RuntimeError("Kaynak bu ilan için PDF döndürmedi.")
+    return body
 
 
 def cleanup_legacy_rows(db: Session) -> dict:
@@ -522,10 +626,7 @@ def cleanup_legacy_rows(db: Session) -> dict:
             job.archived_reason = f"Aynı kaynaktaki kopya kayıt (asıl kayıt #{keep.id})"
             for listing in db.scalars(select(SourceListing).where(SourceListing.job_id == job.id)).all():
                 listing.job_id = keep.id
-            if job.tracking and not keep.tracking:
-                keep.tracking = job.tracking
-            if job.notes and not keep.notes:
-                keep.notes = job.notes
+            _move_user_data(db, job.id, keep.id)
             archived += 1
     db.commit()
     return {"archived": archived}
@@ -579,7 +680,7 @@ class SyncManager:
     # ---- otomatik tarama ----
     def start_scheduler(self) -> None:
         interval = config.sync_interval_hours()
-        if interval <= 0 or config.is_read_only() or self._scheduler is not None:
+        if interval <= 0 or self._scheduler is not None:
             return
         self._stop.clear()
         self._scheduler = threading.Thread(target=self._schedule_loop, args=(interval,), name="careerpilot-scheduler", daemon=True)

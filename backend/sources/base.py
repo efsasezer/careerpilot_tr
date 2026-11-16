@@ -161,9 +161,26 @@ class BaseJobSource(ABC):
     @staticmethod
     def document_detail(url: str, body: bytes, content_type: str, title: str = "") -> Dict[str, Any]:
         """Detayı doğrudan resmî belge (PDF/DOCX) olan ilanlar için ortak ayrıştırma."""
-        from ..documents import parse_document
+        from ..documents import DocumentParseError, ScannedDocumentError, parse_document
 
-        parsed = parse_document(url, body, content_type)
+        try:
+            parsed = parse_document(url, body, content_type)
+        except DocumentParseError as error:
+            if not body.startswith(b"%PDF-"):
+                raise
+            # Metin katmanı yok: taranmış PDF. OCR denenir; olmazsa ilan "okunamadı" kalır.
+            from ..ocr import OcrUnavailable, ocr_pdf
+
+            try:
+                scanned = ocr_pdf(body)
+            except OcrUnavailable as unavailable:
+                raise ScannedDocumentError(f"Taranmış PDF okunamadı: {unavailable}") from error
+            except Exception as failure:  # OCR hatası taramayı durdurmaz
+                raise ScannedDocumentError(f"Taranmış PDF okunamadı: OCR hatası ({failure})") from error
+            parsed = {
+                "text": scanned["text"], "shared_requirements": "", "positions": [], "links": [],
+                "partially_read": True, "ocr_confidence": scanned["confidence"],
+            }
         return {
             "source_text": parsed["text"],
             "content_hash": sha256(body).hexdigest(),

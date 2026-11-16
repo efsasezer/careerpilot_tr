@@ -1,36 +1,29 @@
-const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(
-  /\/+$/,
-  "",
-);
+// API, arayüzle aynı alan adından /api altında sunulur (yerelde Vite vekili, yayında Render yönlendirmesi).
+// Böylece oturum çerezi birinci taraf kalır; tarayıcıda şifre ya da anahtar saklanmaz.
+const API_URL = (import.meta.env.VITE_API_URL || "/api").replace(/\/+$/, "");
 
 export class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  constructor(message: string, readonly status: number) {
     super(message);
     this.name = "ApiError";
   }
 }
 
-export async function apiRequest<T>(
-  path: string,
-  token: string,
-  init: RequestInit = {},
-): Promise<T> {
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
-  if (init.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
+  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...init, headers, credentials: "include" });
+  } catch {
+    throw new ApiError("Sunucuya ulaşılamadı. Bağlantınızı kontrol edip tekrar deneyin.", 0);
   }
-
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as
-      | { detail?: string }
-      | null;
+    const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+    const detail = typeof body?.detail === "string" ? body.detail : null;
+    if (response.status === 401 && !path.startsWith("/auth/")) window.dispatchEvent(new Event("careerpilot:unauthorized"));
     throw new ApiError(
-      body?.detail || `API isteği başarısız (${response.status})`,
+      detail || (init.method && init.method !== "GET" ? "Kaydedilemedi, tekrar dene." : `İstek başarısız (${response.status})`),
       response.status,
     );
   }

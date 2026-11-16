@@ -1,45 +1,37 @@
 import json
 import logging
 import os
-import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from . import config
+from . import auth, config
 from .database import Base, SessionLocal, engine, get_db
 from .document_sync import sync_jobs_documents
-from .eligibility import (
-    detect_application_status,
-    detect_recruitment_method,
-    parse_kpss_scores,
-)
-from .matching import build_matches, invalidate_cache
+from .eligibility import detect_application_status, detect_recruitment_method, parse_kpss_scores
+from .events import EVENT_LABELS, task_occurrences
+from .matching import build_matches, invalidate_cache, job_content_version
 from .migrate import migrate as run_migrations
-from .models import CandidateProfile, Job, Notification, SourceListing, SourceSyncHistory
+from .models import (
+    CandidateProfile, DocumentPosition, Job, JobDocument, JobEvent, Notification, SourceListing,
+    SourceSyncHistory, UserJobState, UserTask, UserVerification,
+)
 from .notifications import (
-    channel_status,
-    load_settings,
-    process_notifications,
-    save_settings,
-    send_to_channels,
+    channel_status, load_settings, process_notifications, refresh_daily, save_settings, send_to_channels,
 )
 from .schemas import (
-    BulkJobCreate,
-    JobCreate,
-    JobRead,
-    NotificationSettings,
-    ProfileRead,
-    ProfileUpdate,
-    TrackingUpdate,
+    BulkJobCreate, EventUpdate, JobCreate, JobRead, LoginRequest, NotificationSettings, ProfileRead,
+    ProfileUpdate, TaskCompletion, TaskUpdate, TrackingUpdate, VerificationUpdate,
 )
 from .sources.registry import get_source_registry
-from .sync import cleanup_legacy_rows, parse_turkish_date, run_sync, sync_manager  # noqa: F401  (parse_turkish_date dışa açık)
+from .sync import (  # noqa: F401  (parse_turkish_date dışa açık)
+    cleanup_legacy_rows, download_official_pdf, parse_turkish_date, refetch_job, run_sync, sync_manager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +45,7 @@ try:
     with SessionLocal() as _db:
         cleanup_legacy_rows(_db)
 except Exception:  # pragma: no cover - temizlik başarısız olsa da uygulama açılır
-    logging.getLogger(__name__).exception("Legacy cleanup failed")
+    logger.exception("Legacy cleanup failed")
 
 
 @asynccontextmanager
@@ -67,84 +59,60 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="CareerPilot TR API",
     version=config.APP_VERSION,
-    description="Kamu personeli alım ilanları, profil eşleştirme ve bildirim servisi",
+    description="Kamu personeli alım ilanları, profil eşleştirme ve takip servisi",
     lifespan=lifespan,
 )
-DEMO_MODE = config.is_demo_mode()
-CORS_ORIGINS = {
-    "https://careerpilot-tr-web.onrender.com",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-}
+CORS_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
 CORS_ORIGINS.update(
-    origin.strip()
-    for origin in os.getenv("CAREERPILOT_CORS_ORIGINS", "").split(",")
-    if origin.strip()
+    origin.strip() for origin in os.getenv("CAREERPILOT_CORS_ORIGINS", "").split(",") if origin.strip()
 )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(CORS_ORIGINS),
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_headers=["Content-Type", "X-Requested-With"],
 )
+
+PUBLIC_PATHS = {"/health", "/auth/login", "/auth/me", "/auth/logout"}
+
+
+def _client_address(request: Request) -> str:
+    """Giriş denemesi sınırı için istemci adresi. Render'da gerçek adres vekil başlığındadır."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded and (os.getenv("RENDER") or config.env_flag("CAREERPILOT_TRUST_PROXY")):
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_https(request: Request) -> bool:
+    return (
+        request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+        or bool(os.getenv("RENDER"))
+    )
 
 
 @app.middleware("http")
-async def restrict_api(request, call_next):
-    if request.method == "OPTIONS":
-        return await call_next(request)
-
+async def require_session(request: Request, call_next):
+    """/health ve giriş uçları dışındaki her istek (okuma ve yazma) geçerli oturum ister."""
     path = request.url.path.rstrip("/") or "/"
-    # /health herkese açık tek uç noktadır (kişisel veri içermez).
-    if path == "/health":
+    if request.method == "OPTIONS" or path in PUBLIC_PATHS:
         return await call_next(request)
-
-    access_token = config.access_token()
-    if not access_token and _is_local_request(request):
-        # Yerel geliştirme: anahtar tanımlı değilse yalnızca bu bilgisayardan gelen istekler kabul edilir.
-        if _read_only() and request.method not in {"GET", "HEAD", "OPTIONS"}:
-            return JSONResponse(status_code=404, content={"detail": "Salt okunur yayında veri değiştiren işlemler kullanılamaz."})
-        return await call_next(request)
-    if not access_token:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "Sunucuda erişim anahtarı yapılandırılmamış (CAREERPILOT_ACCESS_TOKEN)."},
-        )
-
-    authorization = request.headers.get("authorization", "").strip()
-    candidate = authorization[7:].strip() if authorization.startswith("Bearer ") else ""
-    if not candidate or not secrets.compare_digest(candidate.encode("utf-8"), access_token.encode("utf-8")):
-        return JSONResponse(
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-            content={"detail": "Bu veriler için geçerli erişim anahtarı gerekli."},
-        )
-
-    if _read_only() and request.method not in {"GET", "HEAD", "OPTIONS"}:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "Salt okunur yayında veri değiştiren işlemler kullanılamaz."},
-        )
+    error = auth.config_error()
+    if error:
+        return JSONResponse(status_code=503, content={"detail": error})
+    with SessionLocal() as db:
+        authenticated = auth.is_authenticated(db, request.cookies.get(auth.COOKIE_NAME))
+    if not authenticated:
+        return JSONResponse(status_code=401, content={"detail": "Oturum açmanız gerekiyor."})
+    # Çerezli isteklerde siteler arası yazmayı engelle: tarayıcı Origin gönderiyorsa aynı site olmalı.
+    origin = request.headers.get("origin")
+    if request.method not in {"GET", "HEAD"} and origin:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        if origin.split("://", 1)[-1] != host and origin not in CORS_ORIGINS:
+            return JSONResponse(status_code=403, content={"detail": "Bu istek başka bir siteden geldiği için reddedildi."})
     return await call_next(request)
-
-
-restrict_demo_api = restrict_api  # eski ad
-
-
-def _is_local_request(request) -> bool:
-    """Anahtarsız erişime yalnızca yerel makineden ve bir vekil sunucu arkasında değilken izin verilir."""
-    if os.getenv("RENDER") or config.env_flag("CAREERPILOT_REQUIRE_TOKEN") or DEMO_MODE or config.is_demo_mode():
-        return False
-    headers = request.headers
-    if headers.get("x-forwarded-for") or headers.get("forwarded") or headers.get("x-real-ip"):
-        return False
-    host = request.client.host if request.client else ""
-    return host in {"127.0.0.1", "::1"}
-
-
-def _read_only() -> bool:
-    return DEMO_MODE or config.is_read_only()
 
 
 SOURCES_STATUS = {
@@ -191,10 +159,56 @@ def health():
         "status": "ok",
         "app": "CareerPilot TR API",
         "version": config.APP_VERSION,
-        "demo_mode": DEMO_MODE or config.is_demo_mode(),
-        "read_only": _read_only(),
-        "auth_required": bool(config.access_token()),
-        "auto_sync_hours": 0 if _read_only() else config.sync_interval_hours(),
+        "auth_configured": auth.config_error() is None,
+    }
+
+
+# ============================================================
+# GİRİŞ / OTURUM
+# ============================================================
+
+@app.post("/auth/login")
+def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    error = auth.config_error()
+    if error:
+        raise HTTPException(status_code=503, detail=error)
+    client = _client_address(request)
+    wait = auth.login_limiter.retry_after(client)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Çok fazla hatalı deneme. {max(1, wait // 60)} dakika sonra yeniden deneyin.",
+            headers={"Retry-After": str(wait)},
+        )
+    if not auth.password_matches(payload.password):
+        auth.login_limiter.record_failure(client)
+        raise HTTPException(status_code=401, detail="Şifre hatalı.")
+    auth.login_limiter.record_success(client)
+    response.set_cookie(
+        auth.COOKIE_NAME,
+        auth.create_session(db),
+        max_age=auth.SESSION_DAYS * 24 * 3600,
+        httponly=True,
+        secure=_is_https(request),
+        samesite="lax",
+        path="/",
+    )
+    return {"authenticated": True}
+
+
+@app.post("/auth/logout")
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    auth.destroy_session(db, request.cookies.get(auth.COOKIE_NAME))
+    response.delete_cookie(auth.COOKIE_NAME, path="/")
+    return {"authenticated": False}
+
+
+@app.get("/auth/me")
+def current_session(request: Request, db: Session = Depends(get_db)):
+    error = auth.config_error()
+    return {
+        "authenticated": error is None and auth.is_authenticated(db, request.cookies.get(auth.COOKIE_NAME)),
+        "config_error": error,
     }
 
 
@@ -218,6 +232,7 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
     db.add(job)
     db.commit()
     db.refresh(job)
+    invalidate_cache()
     return job
 
 
@@ -235,6 +250,7 @@ def create_jobs_bulk(payload: BulkJobCreate, db: Session = Depends(get_db)):
     db.commit()
     for job in jobs:
         db.refresh(job)
+    invalidate_cache()
     return jobs
 
 
@@ -252,16 +268,42 @@ def list_jobs(
     return list(db.scalars(stmt).all())
 
 
-@app.get("/jobs/{job_id}/detail")
-def job_detail(job_id: int, db: Session = Depends(get_db)):
-    """Tek ilanın tam metni, belge incelemesi ve pozisyon bazlı uygunluk sonuçları."""
+def _public_job(db: Session, job_id: int) -> Job:
     job = db.get(Job, job_id)
     if not job or job.sector != "public":
         raise HTTPException(status_code=404, detail="İlan bulunamadı")
-    positions = [item for item in build_matches(db, full=True, only_job_ids=[job_id])["jobs"]]
+    return job
+
+
+def _event_payload(event: JobEvent) -> dict:
+    return {
+        "id": event.id,
+        "job_id": event.job_id,
+        "kind": event.kind,
+        "label": event.title or EVENT_LABELS.get(event.kind, "Olay"),
+        "date": event.event_date.isoformat(),
+        "end_date": event.end_date.isoformat() if event.end_date else None,
+        "time": event.event_time,
+        "evidence": event.evidence,
+        "url": event.url,
+        "source": event.source,
+        "user_edited": event.user_edited,
+        "previous_date": event.previous_date.isoformat() if event.previous_date else None,
+    }
+
+
+@app.get("/jobs/{job_id}/detail")
+def job_detail(job_id: int, db: Session = Depends(get_db)):
+    """Tek ilanın tam metni, belge incelemesi, tarihli olayları ve kadro bazlı uygunluk sonuçları."""
+    job = _public_job(db, job_id)
+    positions = build_matches(db, full=True, only_job_ids=[job_id])["jobs"]
     if not positions:
         raise HTTPException(status_code=404, detail="İlan bulunamadı")
     first = positions[0]
+    events = db.scalars(
+        select(JobEvent).where(JobEvent.job_id == job_id, JobEvent.deleted.is_(False)).order_by(JobEvent.event_date)
+    ).all()
+    job_level = db.scalar(select(UserVerification).where(UserVerification.job_id == job_id, UserVerification.position_id == ""))
     return {
         "id": job.id,
         "title": job.title,
@@ -270,8 +312,11 @@ def job_detail(job_id: int, db: Session = Depends(get_db)):
         "source_url": job.source_url or None,
         "description": job.description or "",
         "document_review": first.get("document_review"),
-        "tracking": job.tracking or "",
-        "notes": job.notes or "",
+        "tracking": first["tracking"],
+        "notes": first["notes"],
+        "has_pdf": _has_pdf(db, job),
+        "events": [_event_payload(event) for event in events],
+        "job_verification": first["verification"] if job_level else None,
         "positions": [
             {key: value for key, value in item.items() if key not in ("description", "document_review")}
             for item in positions
@@ -279,18 +324,52 @@ def job_detail(job_id: int, db: Session = Depends(get_db)):
     }
 
 
+def _has_pdf(db: Session, job: Job) -> bool:
+    listing = db.scalar(select(SourceListing).where(SourceListing.job_id == job.id).limit(1))
+    if listing is not None and (listing.source_key == "sbb" or ".pdf" in (listing.official_url or "").casefold()):
+        return True
+    return any(".pdf" in (doc.document_url or "").casefold()
+               for doc in db.scalars(select(JobDocument).where(JobDocument.job_id == job.id)).all())
+
+
+@app.get("/jobs/{job_id}/document.pdf")
+def job_pdf(job_id: int, db: Session = Depends(get_db)):
+    """Resmî ilan PDF'ini kaynağından alıp uygulama içinde göstermek için iletir."""
+    job = _public_job(db, job_id)
+    try:
+        body = download_official_pdf(db, job)
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Resmî PDF alınamadı: {str(error)[:200]}") from error
+    return Response(content=body, media_type="application/pdf", headers={"Content-Disposition": "inline"})
+
+
+@app.post("/jobs/{job_id}/ocr")
+def retry_reading(job_id: int, db: Session = Depends(get_db)):
+    """İlanın belgesini yeniden okur; metin çıkmazsa OCR dener."""
+    job = _public_job(db, job_id)
+    try:
+        result = refetch_job(db, job)
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=str(error)[:300]) from error
+    invalidate_cache()
+    return result
+
+
 @app.patch("/jobs/{job_id}/tracking")
 def update_tracking(job_id: int, payload: TrackingUpdate, db: Session = Depends(get_db)):
-    job = db.get(Job, job_id)
-    if not job:
+    if not db.get(Job, job_id):
         raise HTTPException(status_code=404, detail="İlan bulunamadı")
-    job.tracking = payload.tracking
+    state = db.get(UserJobState, job_id)
+    if state is None:
+        state = UserJobState(job_id=job_id, tracking="", notes="", updated_at=datetime.now())
+        db.add(state)
+    state.tracking = payload.tracking
     if payload.notes is not None:
-        job.notes = payload.notes
-    job.updated_at = datetime.now()
+        state.notes = payload.notes
+    state.updated_at = datetime.now()
     db.commit()
     invalidate_cache()
-    return {"id": job.id, "tracking": job.tracking, "notes": job.notes}
+    return {"id": job_id, "tracking": state.tracking, "notes": state.notes}
 
 
 @app.delete("/jobs/{job_id}")
@@ -302,16 +381,233 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Kaynaklardan gelen ilanlar silinemez; gizlemek için takip durumunu kullanın.")
     db.delete(job)
     db.commit()
+    invalidate_cache()
     return {"deleted": job_id}
+
+
+# ============================================================
+# ELLE DOĞRULAMA
+# ============================================================
+
+def _content_version(db: Session, job: Job) -> tuple[str, dict]:
+    documents = list(db.scalars(select(JobDocument).where(JobDocument.job_id == job.id).order_by(JobDocument.id)).all())
+    rows: dict[int, list] = {}
+    if documents:
+        for row in db.scalars(
+            select(DocumentPosition).where(DocumentPosition.document_id.in_([d.id for d in documents]))
+            .order_by(DocumentPosition.document_id, DocumentPosition.row_index)
+        ).all():
+            rows.setdefault(row.document_id, []).append(row)
+    return job_content_version(job, documents, rows)
+
+
+@app.put("/jobs/{job_id}/verification")
+def set_verification(job_id: int, payload: VerificationUpdate, db: Session = Depends(get_db)):
+    """Kullanıcının kararı: sistem kararından ayrı saklanır ve her zaman önceliklidir."""
+    job = _public_job(db, job_id)
+    record = db.scalar(select(UserVerification).where(
+        UserVerification.job_id == job_id, UserVerification.position_id == payload.position_id,
+    ))
+    if record is None:
+        record = UserVerification(job_id=job_id, position_id=payload.position_id, decision=payload.decision, verified_at=datetime.now())
+        db.add(record)
+    content_hash, snapshot = _content_version(db, job)
+    record.decision = payload.decision
+    record.note = payload.note
+    record.verified_at = datetime.now()
+    record.content_hash = content_hash
+    record.content_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    record.job_updated_at = job.updated_at
+    db.commit()
+    invalidate_cache()
+    return {"job_id": job_id, "position_id": record.position_id, "decision": record.decision}
+
+
+@app.delete("/jobs/{job_id}/verification")
+def clear_verification(job_id: int, position_id: str = "", db: Session = Depends(get_db)):
+    """Doğrulamayı geri alır; ilan sistemin hesapladığı duruma döner."""
+    record = db.scalar(select(UserVerification).where(
+        UserVerification.job_id == job_id, UserVerification.position_id == position_id,
+    ))
+    if record is not None:
+        db.delete(record)
+        db.commit()
+        invalidate_cache()
+    return {"job_id": job_id, "position_id": position_id, "decision": None}
+
+
+@app.post("/jobs/{job_id}/verification/acknowledge")
+def acknowledge_update(job_id: int, db: Session = Depends(get_db)):
+    """"Gözden geçirdim, karar geçerli": karar değişmez, kayıtlı içerik sürümü güncellenir."""
+    job = _public_job(db, job_id)
+    content_hash, snapshot = _content_version(db, job)
+    records = db.scalars(select(UserVerification).where(UserVerification.job_id == job_id)).all()
+    for record in records:
+        record.content_hash = content_hash
+        record.content_snapshot = json.dumps(snapshot, ensure_ascii=False)
+        record.job_updated_at = job.updated_at
+    db.commit()
+    invalidate_cache()
+    return {"job_id": job_id, "acknowledged": len(records)}
+
+
+# ============================================================
+# TAKVİM: İLAN OLAYLARI VE KİŞİSEL GÖREVLER
+# ============================================================
+
+@app.get("/calendar")
+def calendar(start: date, end: date, db: Session = Depends(get_db)):
+    if end < start or (end - start).days > 400:
+        raise HTTPException(status_code=422, detail="Geçersiz tarih aralığı.")
+    matches = build_matches(db, full=False)
+    by_job: dict[int, dict] = {}
+    order = {"UYGUN": 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2}
+    for item in matches["jobs"]:
+        current = by_job.get(item["parent_job_id"])
+        if current is None or order[item["category"]] < order[current["category"]]:
+            by_job[item["parent_job_id"]] = item
+    events = db.scalars(select(JobEvent).where(
+        JobEvent.deleted.is_(False), JobEvent.event_date <= end,
+        func.coalesce(JobEvent.end_date, JobEvent.event_date) >= start,
+    ).order_by(JobEvent.event_date, JobEvent.event_time)).all()
+    result = []
+    for event in events:
+        item = by_job.get(event.job_id)
+        if item is None or item["tracking"] == "hidden":
+            continue
+        tracked = item["tracking"] in ("saved", "applied", "awaiting", "won", "lost")
+        # Uygun olmayan ilanların olayları takvimi doldurmaz; takip edilenler her zaman görünür.
+        if item["category"] == "UYGUN DEĞİL" and not tracked:
+            continue
+        result.append({
+            **_event_payload(event),
+            "organization": item["organization"],
+            "job_title": item["title"].split(" — ")[0],
+            "category": item["category"],
+            "tracking": item["tracking"],
+            "cancelled": item["application_status"] == "İptal Edildi",
+        })
+    tasks = db.scalars(select(UserTask)).all()
+    return {"events": result, "tasks": task_occurrences(tasks, start, end)}
+
+
+@app.post("/jobs/{job_id}/events")
+def add_event(job_id: int, payload: EventUpdate, db: Session = Depends(get_db)):
+    _public_job(db, job_id)
+    event = JobEvent(
+        job_id=job_id, kind=payload.kind, event_date=payload.event_date, end_date=payload.end_date,
+        event_time=payload.event_time, title=payload.title, url=payload.url, source="user", user_edited=True,
+        evidence="Kullanıcı tarafından eklendi.", updated_at=datetime.now(),
+    )
+    db.add(event)
+    db.commit()
+    return _event_payload(event)
+
+
+@app.patch("/events/{event_id}")
+def edit_event(event_id: int, payload: EventUpdate, db: Session = Depends(get_db)):
+    event = db.get(JobEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Olay bulunamadı")
+    event.kind, event.event_date, event.end_date = payload.kind, payload.event_date, payload.end_date
+    event.event_time, event.title, event.url = payload.event_time, payload.title, payload.url
+    event.user_edited, event.updated_at = True, datetime.now()  # yeniden taramada ezilmez
+    db.commit()
+    return _event_payload(event)
+
+
+@app.delete("/events/{event_id}")
+def delete_event(event_id: int, db: Session = Depends(get_db)):
+    event = db.get(JobEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Olay bulunamadı")
+    if event.source == "user":
+        db.delete(event)
+    else:
+        event.deleted, event.user_edited, event.updated_at = True, True, datetime.now()  # tarama geri getirmesin
+    db.commit()
+    return {"deleted": event_id}
+
+
+def _task_payload(task: UserTask) -> dict:
+    return {
+        "id": task.id, "title": task.title, "description": task.description, "task_date": task.task_date.isoformat(),
+        "start_time": task.start_time, "end_time": task.end_time, "priority": task.priority, "recurrence": task.recurrence,
+        "weekdays": [int(value) for value in (task.weekdays or "").split(",") if value.strip().isdigit()],
+        "until": task.until.isoformat() if task.until else None,
+        "completed_dates": json.loads(task.completed_dates or "[]"),
+    }
+
+
+def _apply_task(task: UserTask, payload: TaskUpdate) -> None:
+    task.title, task.description, task.task_date = payload.title.strip(), payload.description, payload.task_date
+    task.start_time, task.end_time, task.priority = payload.start_time, payload.end_time, payload.priority
+    task.recurrence, task.until = payload.recurrence, payload.until
+    task.weekdays = ",".join(str(day) for day in sorted({day for day in payload.weekdays if 0 <= day <= 6}))
+
+
+@app.get("/tasks")
+def list_tasks(db: Session = Depends(get_db)):
+    return [_task_payload(task) for task in db.scalars(select(UserTask).order_by(UserTask.task_date, UserTask.id)).all()]
+
+
+@app.post("/tasks")
+def create_task(payload: TaskUpdate, db: Session = Depends(get_db)):
+    task = UserTask(title="", task_date=payload.task_date, created_at=datetime.now(), completed_dates="[]")
+    _apply_task(task, payload)
+    db.add(task)
+    db.commit()
+    return _task_payload(task)
+
+
+@app.patch("/tasks/{task_id}")
+def edit_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)):
+    task = db.get(UserTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Görev bulunamadı")
+    _apply_task(task, payload)
+    db.commit()
+    return _task_payload(task)
+
+
+@app.post("/tasks/{task_id}/complete")
+def complete_task(task_id: int, payload: TaskCompletion, db: Session = Depends(get_db)):
+    task = db.get(UserTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Görev bulunamadı")
+    days = set(json.loads(task.completed_dates or "[]"))
+    (days.add if payload.done else days.discard)(payload.day.isoformat())
+    task.completed_dates = json.dumps(sorted(days))
+    db.commit()
+    return _task_payload(task)
+
+
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.get(UserTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Görev bulunamadı")
+    db.delete(task)
+    db.commit()
+    return {"deleted": task_id}
 
 
 # ============================================================
 # ADAY PROFİLİ
 # ============================================================
 
+_JSON_FIELDS = {"educations": list, "experiences": list, "preferences": dict}
+
+
 def _profile_payload(profile: CandidateProfile) -> dict:
     data = {column.name: getattr(profile, column.name) for column in CandidateProfile.__table__.columns}
     data["kpss_scores"] = parse_kpss_scores(profile)
+    for field, kind in _JSON_FIELDS.items():
+        try:
+            value = json.loads(data.get(field) or ("[]" if kind is list else "{}"))
+        except ValueError:
+            value = kind()
+        data[field] = value if isinstance(value, kind) else kind()
     return data
 
 
@@ -339,11 +635,8 @@ def _refresh_notifications() -> None:
 
 
 @app.put("/profile", response_model=ProfileRead)
-def update_profile(
-    payload: ProfileUpdate,
-    db: Session = Depends(get_db),
-    background: BackgroundTasks = None,
-):
+def update_profile(payload: ProfileUpdate, db: Session = Depends(get_db), background: BackgroundTasks = None):
+    """Profili kaydeder. Uygunluk yeniden hesaplanır; elle verilen kararlara dokunulmaz."""
     profile = _get_or_create_profile(db)
     data = payload.model_dump()
     scores = data.pop("kpss_scores")
@@ -351,6 +644,8 @@ def update_profile(
         scores = {}
         if data["kpss_p3"] is not None:
             scores[(data["kpss_score_type"] or "P3").strip().upper() or "P3"] = float(data["kpss_p3"])
+    for field in _JSON_FIELDS:
+        data[field] = json.dumps(data[field], ensure_ascii=False)
     for key, value in data.items():
         setattr(profile, key, value)
     primary = "P3" if "P3" in scores else (max(scores, key=scores.get) if scores else "")
@@ -405,6 +700,11 @@ def list_notifications(
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
+    try:
+        refresh_daily(db)  # site açıldığında günün bildirimleri hesaplanır
+    except Exception:  # pragma: no cover - bildirim hesabı listeyi engellemesin
+        db.rollback()
+        logger.exception("Daily notification refresh failed")
     stmt = select(Notification).order_by(Notification.created_at.desc(), Notification.id.desc()).limit(limit)
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
@@ -454,7 +754,7 @@ def put_notification_settings(payload: NotificationSettings, db: Session = Depen
 
 
 # ============================================================
-# KAYNAKLAR VE SENKRONİZASYON
+# KAYNAKLAR VE TARAMA
 # ============================================================
 
 @app.get("/sources")
@@ -476,11 +776,22 @@ def list_sources(db: Session = Depends(get_db)):
             .order_by(SourceSyncHistory.checked_at.desc()).limit(1)
         )
         failed = db.execute(
-            select(Job.id, Job.title, SourceListing.official_url)
+            select(Job.id, Job.title, SourceListing.official_url, SourceListing.status, SourceListing.raw_payload)
             .join(SourceListing, SourceListing.job_id == Job.id)
-            .where(Job.source_name == info["name"], SourceListing.status == "detail_failed", Job.archived_reason == "")
+            .where(Job.source_name == info["name"], SourceListing.status.in_(("detail_failed", "unreadable")), Job.archived_reason == "")
             .limit(25)
         ).all()
+        failed_items = []
+        for row in failed:
+            try:
+                reason = json.loads(row.raw_payload or "{}").get("error", "")
+            except (ValueError, AttributeError):
+                reason = ""
+            failed_items.append({
+                "job_id": row.id, "title": row.title, "url": row.official_url,
+                "scanned": row.status == "unreadable",
+                "reason": reason or "İlan ayrıntısı okunamadı.",
+            })
         sources_data.append({
             **info,
             "status": (
@@ -500,7 +811,7 @@ def list_sources(db: Session = Depends(get_db)):
             "last_detail_failed": history.detail_failed if history else 0,
             "pages_checked": history.pages_checked if history else 0,
             "last_error": (history.error or None) if history else None,
-            "failed_items": [{"job_id": row.id, "title": row.title, "url": row.official_url} for row in failed],
+            "failed_items": failed_items,
         })
     return sources_data
 
@@ -517,7 +828,7 @@ def sync_status():
 
 @app.post("/sync", status_code=202)
 def start_sync():
-    """Kaynak taramasını arka planda başlatır; ilerleme /sync/status ile izlenir."""
+    """Kaynak taramasını arka planda başlatır; aynı anda ikinci tarama başlamaz."""
     started = sync_manager.start("manual")
     return {"started": started, **sync_manager.status()}
 
@@ -606,4 +917,3 @@ def public_listings(
             continue
         matching.append(_listing_payload(job, application_status))
     return {"total": len(matching), "items": matching[offset:offset + limit]}
-

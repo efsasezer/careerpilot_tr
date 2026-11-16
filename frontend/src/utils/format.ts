@@ -27,6 +27,9 @@ export const TRACKING_LABEL: Record<Tracking, string> = {
   "": "Takip edilmiyor",
   saved: "Kaydedildi",
   applied: "Başvuruldu",
+  awaiting: "Sonuç bekleniyor",
+  won: "Kazandım",
+  lost: "Olmadı",
   hidden: "Gizlendi",
 };
 
@@ -62,15 +65,15 @@ export function groupByJob(positions: MatchedPosition[]): JobGroup[] {
         organization: position.organization,
         primary: position,
         positions: [],
-        category: position.match.category,
+        category: position.category,
         suitableCount: 0,
       };
       groups.set(position.parent_job_id, group);
     }
     group.positions.push(position);
-    if (position.match.category !== "UYGUN DEĞİL") group.suitableCount += 1;
-    if (CATEGORY_RANK[position.match.category] < CATEGORY_RANK[group.category]) {
-      group.category = position.match.category;
+    if (position.category !== "UYGUN DEĞİL") group.suitableCount += 1;
+    if (CATEGORY_RANK[position.category] < CATEGORY_RANK[group.category]) {
+      group.category = position.category;
       group.primary = position;
     }
   }
@@ -84,4 +87,30 @@ export function sortGroups(groups: JobGroup[], order: "relevance" | "deadline" |
     if (order === "relevance" && a.category !== b.category) return CATEGORY_RANK[a.category] - CATEGORY_RANK[b.category];
     return deadline(a).localeCompare(deadline(b));
   });
+}
+
+/** Tarihler Europe/Istanbul saat dilimine göre "YYYY-AA-GG" olarak üretilir. */
+const ISTANBUL_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Istanbul", year: "numeric", month: "2-digit", day: "2-digit" });
+
+export function todayIso(now: Date = new Date()) {
+  return ISTANBUL_DAY.format(now);
+}
+
+export function addDays(iso: string, days: number) {
+  const date = new Date(`${iso}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+export function weekdayIndex(iso: string) {
+  return (new Date(`${iso}T12:00:00Z`).getUTCDay() + 6) % 7; // Pazartesi = 0
+}
+
+export function startOfWeek(iso: string) {
+  return addDays(iso, -weekdayIndex(iso));
+}
+
+export function formatLongDate(iso: string) {
+  return new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "long", year: "numeric", weekday: "long", timeZone: "UTC" })
+    .format(new Date(`${iso}T12:00:00Z`));
 }

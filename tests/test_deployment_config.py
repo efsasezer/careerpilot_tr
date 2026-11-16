@@ -5,35 +5,28 @@ from backend import migrate
 from backend.database import ensure_sqlite_database_file_exists
 
 
-def test_render_uses_default_database_without_a_persistent_disk():
+def test_render_api_requires_password_and_session_secret_without_demo_mode():
     config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
 
-    assert "plan: free" in config
     assert config.count("    name: careerpilot-tr-api\n    runtime: python") == 1
-    assert "startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT" in config
+    assert "--proxy-headers" in config  # Render vekilinin arkasında HTTPS ve gerçek istemci adresi
     assert "healthCheckPath: /health" in config
-    assert "CAREERPILOT_DEMO_MODE" in config
-    assert "CAREERPILOT_ACCESS_TOKEN" in config
-    assert "generateValue: true" in config
-    assert "DATABASE_URL" not in config
-    assert "\n    disk:" not in config
+    assert "CAREERPILOT_DEMO_MODE" not in config and "CAREERPILOT_ACCESS_TOKEN" not in config
+    # Şifre depoya yazılmaz: Render panelinden girilir. Oturum anahtarını Render üretir.
+    assert "      - key: CAREERPILOT_PASSWORD\n        sync: false" in config
+    assert "      - key: CAREERPILOT_SESSION_SECRET\n        generateValue: true" in config
 
 
-def test_render_defines_api_and_react_static_site_only():
+def test_render_static_site_proxies_api_on_the_same_origin():
     config = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
 
     assert config.count("  - type: web") == 2
-    assert config.count("    name: careerpilot-tr-api\n    runtime: python") == 1
     assert "    name: careerpilot-tr-web\n    runtime: static" in config
-    assert config.count("    plan: free") == 1
-    # Erişim anahtarı yalnızca API servisinde durur; statik siteye aktarılmaz.
-    assert config.count("CAREERPILOT_ACCESS_TOKEN") == 1
-    assert "      - key: CAREERPILOT_ACCESS_TOKEN\n        generateValue: true" in config
     assert "streamlit" not in config.casefold()
-    assert "    rootDir: frontend" in config
     assert "    buildCommand: npm ci && npm run build" in config
-    assert "    staticPublishPath: dist" in config
-    assert "        value: https://careerpilot-tr-api.onrender.com" in config
+    # Çerezin birinci taraf olması için API aynı alan adından /api altında sunulur.
+    assert "        source: /api/*\n        destination: https://careerpilot-tr-api.onrender.com/*" in config
+    assert config.index("source: /api/*") < config.index("source: /*\n")
     assert "      - type: rewrite\n        source: /*\n        destination: /index.html" in config
 
 

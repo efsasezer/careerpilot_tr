@@ -118,7 +118,7 @@ def generate_notifications(db: Session, matches: dict | None = None, settings: N
         if (
             settings.deadline_reminder_days
             and summary["application_status"] == "Başvuru Açık"
-            and summary["tracking"] != "applied"
+            and summary["tracking"] not in ("applied", "awaiting", "won", "lost")
             and days_left is not None
             and 0 <= days_left <= settings.deadline_reminder_days
         ):
@@ -226,6 +226,76 @@ def deliver_pending(db: Session, settings: NotificationSettings | None = None) -
             item.delivered_at = now
         db.commit()
     return {"pending": len(pending), "channels": results}
+
+
+def refresh_daily(db: Session, today=None) -> int:
+    """Site açıldığında hesaplanan günlük bildirimler (bugün/yarın son gün, bugünkü olay ve görevler,
+    güncellenen ilanlar). Aynı gün için ikinci kez oluşturulmaz."""
+    from datetime import date as date_type, timedelta
+
+    from .events import EVENT_LABELS, task_occurrences
+    from .models import Job, JobEvent, UserTask
+
+    today = today or date_type.today()
+    tomorrow = today + timedelta(days=1)
+    summaries = {item["job_id"]: item for item in job_summaries(build_matches(db, full=False, today=today))}
+    existing = set(db.scalars(select(Notification.dedupe_key)).all())
+    created = 0
+
+    def add(kind: str, key: str, job_id, category: str, title: str, body: str) -> None:
+        nonlocal created
+        if key in existing:
+            return
+        existing.add(key)
+        db.add(Notification(kind=kind, dedupe_key=key, job_id=job_id, category=category, title=title[:400], body=body,
+                            created_at=datetime.now(), delivered_at=datetime.now()))
+        created += 1
+
+    def relevant(summary) -> bool:
+        if summary is None or summary["tracking"] == "hidden" or summary["application_status"] == "İptal Edildi":
+            return False
+        # Elle "uygun değil" denilen ilanın hatırlatmaları kapalıdır.
+        return summary["category"] != "UYGUN DEĞİL" or summary["tracking"] in ("saved", "applied", "awaiting")
+
+    events = db.scalars(select(JobEvent).where(
+        JobEvent.deleted.is_(False), JobEvent.event_date.in_((today, tomorrow)),
+    )).all()
+    for event in events:
+        summary = summaries.get(event.job_id)
+        if not relevant(summary):
+            continue
+        applied = summary["tracking"] in ("applied", "awaiting", "won", "lost")
+        label = event.title or EVENT_LABELS.get(event.kind, "Olay")
+        name = f"{summary['organization']} — {summary['title']}"
+        if event.kind == "application_deadline":
+            if applied:
+                continue
+            when = "Bugün son gün" if event.event_date == today else "Yarın son gün"
+            add("deadline", f"day:{event.id}:{event.event_date}:{when}", event.job_id, summary["category"], f"{when}: {summary['organization']}", name)
+        elif event.event_date == today:
+            add("event", f"day:{event.id}:{event.event_date}", event.job_id, summary["category"], f"Bugün: {label} — {summary['organization']}",
+                name + (f" ({event.url})" if event.url else ""))
+
+    for event in db.scalars(select(JobEvent).where(JobEvent.previous_date.is_not(None), JobEvent.deleted.is_(False))).all():
+        summary = summaries.get(event.job_id)
+        if relevant(summary):
+            add("date_change", f"datechange:{event.id}:{event.event_date}", event.job_id, summary["category"],
+                f"Tarih değişti: {summary['organization']}",
+                f"{EVENT_LABELS.get(event.kind, 'Olay')}: {event.previous_date:%d.%m.%Y} → {event.event_date:%d.%m.%Y}")
+
+    for summary in summaries.values():
+        if summary.get("stale"):
+            add("verification_stale", f"stale:{summary['job_id']}:{'|'.join(summary['stale_changes'])[:80]}", summary["job_id"], summary["category"],
+                f"İlan güncellendi, doğrulamanı gözden geçir: {summary['organization']}",
+                "Değişen: " + ", ".join(summary["stale_changes"]) + ". Kararınız korunuyor.")
+
+    todays = [item for item in task_occurrences(db.scalars(select(UserTask)).all(), today, today) if not item["done"]]
+    if todays:
+        add("tasks", f"tasks:{today}", None, "", f"Bugünkü görevlerin ({len(todays)})", ", ".join(item["title"] for item in todays[:8]))
+
+    if created:
+        db.commit()
+    return created
 
 
 def process_notifications(db: Session) -> dict:

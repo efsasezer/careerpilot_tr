@@ -5,7 +5,7 @@ import type { MatchedPosition, MatchCategory } from "../types/api";
 function position(jobId: number, category: MatchCategory, deadline: string | null = null): MatchedPosition {
   return {
     id: `${jobId}-${category}`, parent_job_id: jobId, title: `İlan ${jobId} — Pozisyon`, position: "Pozisyon",
-    organization: "Kurum", application_deadline: deadline, match: { category },
+    organization: "Kurum", application_deadline: deadline, category, match: { category },
   } as MatchedPosition;
 }
 

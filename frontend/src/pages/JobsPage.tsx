@@ -5,15 +5,36 @@ import { JobCard } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState, QueryState } from "../components/shared/QueryState";
 import { useMatches } from "../services/api/hooks";
-import type { MatchCategory } from "../types/api";
+import type { MatchCategory, MatchedPosition } from "../types/api";
 import { CATEGORY_LABEL, groupByJob, sortGroups, type JobGroup } from "../utils/format";
 
 const CATEGORIES: MatchCategory[] = ["UYGUN", "POTANSİYEL OLARAK UYGUN", "UYGUN DEĞİL"];
 const PAGE_SIZE = 30;
+type Mode = "all" | "tracked" | "saved" | "applied";
 
-export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
+const MODES: Record<Mode, { title: string; description: string; empty: string; keep: (job: MatchedPosition) => boolean }> = {
+  all: {
+    title: "İlanlar", description: "Bütün kaynaklardaki kamu ilanları, profilinize göre sınıflandırılmış halde.",
+    empty: "Bu filtrelerle ilan bulunamadı", keep: (job) => job.tracking !== "hidden",
+  },
+  tracked: {
+    title: "Takip listem", description: "Kaydettiğiniz ve başvurduğunuz bütün ilanlar.",
+    empty: "Henüz takip ettiğiniz ilan yok", keep: (job) => !["", "hidden"].includes(job.tracking),
+  },
+  saved: {
+    title: "Kaydettiklerim", description: "Daha sonra bakmak için kaydettiğiniz ilanlar. Son başvurusu yaklaşınca bildirim alırsınız.",
+    empty: "Kaydettiğiniz ilan yok", keep: (job) => job.tracking === "saved",
+  },
+  applied: {
+    title: "Başvurduklarım", description: "Başvurduğunuz ilanlar ve sonuç durumları. Sınav ve sonuç tarihleri takvimde öne çıkar.",
+    empty: "Başvurduğunuz ilan yok", keep: (job) => ["applied", "awaiting", "won", "lost"].includes(job.tracking),
+  },
+};
+
+export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
   const query = useMatches();
   const [params, setParams] = useSearchParams();
+  const tracked = mode !== "all";
   const requested = params.get("durum") as MatchCategory | null;
   const category: MatchCategory | "all" = tracked ? "all" : requested && CATEGORIES.includes(requested) ? requested : "UYGUN";
   const [search, setSearch] = useState("");
@@ -21,31 +42,37 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
   const [status, setStatus] = useState(tracked ? "all" : "active");
   const [onlyPreferred, setOnlyPreferred] = useState(false);
   const [hideAcademic, setHideAcademic] = useState(false);
+  const [review, setReview] = useState<"pending" | "verified">("pending");
   const [order, setOrder] = useState<"relevance" | "deadline" | "newest">("deadline");
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const info = MODES[mode];
 
   const all = query.data?.jobs ?? [];
   const sources = useMemo(() => [...new Set(all.map((job) => job.source_name))].sort(), [all]);
-  const hasPreference = all.some((job) => job.location_match !== null);
+  const hasPreference = all.some((job) => job.out_of_preference);
 
-  const { groups, counts } = useMemo(() => {
+  const { groups, counts, verifiedFromReview } = useMemo(() => {
     const term = search.trim().toLocaleLowerCase("tr-TR");
     const visible = all.filter((job) => {
-      if (tracked ? !(job.tracking === "saved" || job.tracking === "applied") : job.tracking === "hidden") return false;
+      if (!info.keep(job)) return false;
       if (status === "active" && job.is_expired) return false;
       if (status === "open" && job.application_status !== "Başvuru Açık") return false;
       if (status === "upcoming" && job.application_status !== "Başvuru Başlamadı") return false;
       if (source && job.source_name !== source) return false;
-      if (onlyPreferred && job.location_match === false) return false;
+      if (onlyPreferred && job.out_of_preference) return false;
       if (hideAcademic && job.match.kind === "academic") return false;
       if (term && !`${job.organization} ${job.title} ${job.position} ${job.city ?? ""} ${job.education_requirement}`.toLocaleLowerCase("tr-TR").includes(term)) return false;
       return true;
     });
     const grouped = groupByJob(visible);
     const counts = Object.fromEntries(CATEGORIES.map((key) => [key, grouped.filter((group) => group.category === key).length])) as Record<MatchCategory, number>;
-    const selected: JobGroup[] = category === "all" ? grouped : grouped.filter((group) => group.category === category);
-    return { groups: sortGroups(selected, tracked ? "deadline" : order), counts };
-  }, [all, search, source, status, onlyPreferred, hideAcademic, order, category, tracked]);
+    // Sistem "doğrulanmalı" demiş, kullanıcı karar vermiş ilanlar: geçtikleri sekmede görünür, buradan da süzülebilir.
+    const verifiedFromReview = grouped.filter((group) =>
+      group.positions.some((position) => position.verification && position.system_category === "POTANSİYEL OLARAK UYGUN"));
+    let selected: JobGroup[] = category === "all" ? grouped : grouped.filter((group) => group.category === category);
+    if (category === "POTANSİYEL OLARAK UYGUN" && review === "verified") selected = verifiedFromReview;
+    return { groups: sortGroups(selected, tracked ? "deadline" : order), counts, verifiedFromReview };
+  }, [all, search, source, status, onlyPreferred, hideAcademic, order, category, tracked, review, info]);
 
   function selectCategory(next: MatchCategory) {
     const updated = new URLSearchParams(params);
@@ -56,12 +83,7 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
 
   return (
     <QueryState isLoading={query.isLoading} error={query.error}>
-      <PageHeader
-        title={tracked ? "Takip listem" : "İlanlar"}
-        description={tracked
-          ? "Kaydettiğiniz ve başvurduğunuz ilanlar. Kaydedilen ilanların son başvurusu yaklaşınca bildirim alırsınız."
-          : "Bütün kaynaklardaki kamu ilanları, profilinize göre sınıflandırılmış halde."}
-      />
+      <PageHeader title={info.title} description={info.description} />
 
       {!tracked && (
         <div className="tabs" role="tablist" aria-label="Uygunluk durumu">
@@ -70,6 +92,13 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
               {CATEGORY_LABEL[key]} <span>{counts[key]}</span>
             </button>
           ))}
+        </div>
+      )}
+
+      {category === "POTANSİYEL OLARAK UYGUN" && (
+        <div className="segmented" role="group" aria-label="Doğrulama durumu">
+          <button className={review === "pending" ? "selected" : ""} onClick={() => setReview("pending")}>Bakmadıklarım ({counts["POTANSİYEL OLARAK UYGUN"]})</button>
+          <button className={review === "verified" ? "selected" : ""} onClick={() => setReview("verified")}>Doğruladıklarım ({verifiedFromReview.length})</button>
         </div>
       )}
 
@@ -114,7 +143,7 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
         {hasPreference && (
           <label className="check-field">
             <input type="checkbox" checked={onlyPreferred} onChange={(event) => setOnlyPreferred(event.target.checked)} />
-            Tercih ettiğim şehirler
+            Tercih dışı olanları gizle
           </label>
         )}
       </div>
@@ -128,7 +157,7 @@ export default function JobsPage({ tracked = false }: { tracked?: boolean }) {
           )}
         </>
       ) : (
-        <EmptyState title={tracked ? "Henüz takip ettiğiniz ilan yok" : "Bu filtrelerle ilan bulunamadı"}>
+        <EmptyState title={info.empty}>
           {tracked ? "Bir ilanı açıp “Kaydet” veya “Başvurdum” dediğinizde burada görünür." : "Aramayı veya filtreleri değiştirip yeniden deneyin."}
         </EmptyState>
       )}

@@ -584,9 +584,15 @@ def classify_public_job(job, candidate):
 
     reasons, unknowns, mismatches, requirements = [], [], [], []
 
-    def add(name, status, detail):
-        requirements.append({"name": name, "status": status, "detail": detail})
+    def add(name, status, detail, evidence=""):
+        requirements.append({
+            "name": name, "status": status, "detail": detail,
+            "evidence": " ".join(str(evidence or "").split())[:420],
+        })
         {"met": reasons, "not_met": mismatches, "unknown": unknowns}[status].append(detail)
+
+    education_quote = " ".join(education_evidence)[:420]
+    reference_date = _job_value(job, "reference_date", None) or date.today()
 
     academic = is_academic_listing(title, position)
     special = _special_group(title, description)
@@ -612,7 +618,7 @@ def classify_public_job(job, candidate):
             education_status, education_detail = "not_met", "Öğretim üyesi kadrosu doktora gerektirir; profilinizdeki öğrenim düzeyi yeterli değil."
         else:
             education_status, education_detail = _assess_education(candidate, education_evidence, codes, title, position, position_specific)
-        add("Eğitim", education_status, education_detail)
+        add("Eğitim", education_status, education_detail, education_quote)
         if education_status != "not_met":
             add("Akademik şartlar", "unknown", (
                 "Akademik kadro: KPSS aranmaz; ALES, yabancı dil ve (araştırma görevlisi için) lisansüstü öğrencilik "
@@ -622,7 +628,7 @@ def classify_public_job(job, candidate):
         education_status, education_detail = _assess_education(candidate, education_evidence, codes, title, position, position_specific)
         if not has_detail and education_status == "unknown":
             education_detail = "İlanın ayrıntılı şartları henüz okunamadı; yalnızca liste bilgisi var."
-        add("Eğitim", education_status, education_detail)
+        add("Eğitim", education_status, education_detail, education_quote)
 
     for code in codes:
         if code in ANY_PROGRAM_CODES:
@@ -644,38 +650,67 @@ def classify_public_job(job, candidate):
 
     kpss_status = "unknown"
     mentions_kpss = "kpss" in normalized_text
+    kpss_quote = next(
+        (sentence for sentence, normalized in sentences
+         if "kpss" in normalized and (_KPSS_TYPE.search(normalized) or re.search(r"\d{2}", normalized))),
+        "",
+    ) or " ".join(filter(None, (
+        str(_job_value(job, "kpss_score_type", "") or ""),
+        f"taban {minimum:g}" if minimum is not None else "",
+    )))
     if not academic and (kpss_types or minimum is not None):
         usable = [kind for kind in kpss_types if kind in scores]
         if not scores:
-            add("KPSS", "unknown", "Profilde KPSS puanı girilmemiş.")
+            add("KPSS", "unknown", "Profilde KPSS puanı girilmemiş.", kpss_quote)
         elif kpss_types and not usable:
             kpss_status = "not_met"
             add("KPSS", "not_met", (
                 f"İlan {'/'.join(kpss_types)} puan türünü istiyor; profilinizde bu türde puan yok "
                 f"(kayıtlı: {', '.join(sorted(scores))})."
-            ))
+            ), kpss_quote)
         elif not kpss_types:
             add("KPSS", "unknown", (
                 f"İlan en az {minimum:g} KPSS puanı istiyor ancak puan türü metinden okunamadı; resmî ilandan doğrulanmalı."
-            ))
+            ), kpss_quote)
         else:
             used = max(usable, key=lambda kind: scores[kind])
             score = scores[used]
+            # Kanıt olarak, kullanılan puan türünün geçtiği cümle gösterilir.
+            kpss_quote = next(
+                (sentence for sentence, normalized in sentences
+                 if "kpss" in normalized and f"P{int(used[1:])}" in {f"P{int(n)}" for n in _KPSS_TYPE.findall(normalized)}),
+                kpss_quote,
+            )
             candidate_kpss_type, candidate_kpss_score = used, score
             if minimum is not None and score < minimum:
                 kpss_status = "not_met"
-                add("KPSS", "not_met", f"{used} puanınız {score:.2f}; ilanın taban puanı {minimum:g}.")
+                add("KPSS", "not_met", f"{used} puanınız {score:.2f}; ilanın taban puanı {minimum:g}.", kpss_quote)
             elif minimum is not None:
                 kpss_status = "met"
-                add("KPSS", "met", f"{used} puanınız {score:.2f}; taban puan {minimum:g} şartını karşılıyor.")
+                add("KPSS", "met", f"{used} puanınız {score:.2f}; taban puan {minimum:g} şartını karşılıyor.", kpss_quote)
             else:
                 kpss_status = "met"
-                add("KPSS", "met", f"{used} puanınız {score:.2f}; ilanın puan türüyle eşleşiyor, taban puan belirtilmemiş.")
+                add("KPSS", "met", f"{used} puanınız {score:.2f}; puan türü eşleşiyor. Taban puan yok, başvuru şartı karşılanıyor.", kpss_quote)
     elif not academic and mentions_kpss:
-        add("KPSS", "unknown", "İlanda KPSS şartı var ancak puan türü/taban puan metinden okunamadı; resmî ilandan doğrulanmalı.")
+        add("KPSS", "unknown", "İlanda KPSS şartı var ancak puan türü/taban puan metinden okunamadı; resmî ilandan doğrulanmalı.", kpss_quote)
 
     if not academic:
-        _assess_other_requirements(candidate, description, mandatory, normalized_text, add)
+        _assess_other_requirements(candidate, description, mandatory, normalized_text, add, reference_date)
+
+    # OCR ile okunan metin harf/sayı hatası içerebilir: otomatik karar verilmez.
+    if _job_value(job, "ocr", False):
+        add("Belge okuma", "unknown", (
+            "İlan taranmış PDF'ten OCR ile okundu; harf ve sayılar hatalı olabilir. "
+            "Şartları resmî PDF'ten kontrol edip elle doğrulayın."
+        ))
+
+    # İlan metni okunduysa, aranmayan yaygın şartlar "aranmıyor" olarak ayrıca gösterilir
+    # (okunamayan bilgiyle karıştırılmaması için).
+    if has_detail and not academic:
+        named = {item["name"] for item in requirements}
+        for name, label in NOT_REQUIRED_LABELS:
+            if name not in named:
+                requirements.append({"name": name, "status": "not_required", "detail": f"İlan metninde {label} aranmıyor.", "evidence": ""})
 
     general = [label for pattern, label in GENERAL_CONDITIONS if re.search(pattern, normalized_text)]
     unknowns = list(dict.fromkeys(unknowns))
@@ -726,102 +761,180 @@ def classify_public_job(job, candidate):
     }
 
 
-def _assess_other_requirements(candidate, description, mandatory, normalized_text, add):
+NOT_REQUIRED_LABELS = (
+    ("KPSS", "KPSS puan şartı"), ("Yaş", "yaş sınırı"), ("YDS", "yabancı dil puanı"), ("Deneyim", "mesleki deneyim"),
+    ("Sürücü belgesi", "sürücü belgesi"), ("Sertifika", "sertifika"),
+)
+
+
+def candidate_age_on(candidate, reference_date):
+    """Yaş, bugüne göre değil ilanın başvuru tarihine göre hesaplanır."""
+    birth = candidate.get("birth_date")
+    if isinstance(birth, str) and birth:
+        try:
+            birth = date.fromisoformat(birth[:10])
+        except ValueError:
+            birth = None
+    if isinstance(birth, date):
+        years = reference_date.year - birth.year - ((reference_date.month, reference_date.day) < (birth.month, birth.day))
+        return years
+    return candidate.get("age")
+
+
+def candidate_experience_on(candidate, reference_date):
+    """Deneyim kayıtlarından başvuru tarihine kadar geçen toplam süre (yıl)."""
+    records = candidate.get("experiences") or []
+    total_months = 0
+    counted = False
+    for record in records:
+        start = _parse_month(record.get("start"))
+        end = _parse_month(record.get("end")) or reference_date
+        if start is None:
+            continue
+        end = min(end, reference_date)
+        if end > start:
+            total_months += (end.year - start.year) * 12 + (end.month - start.month)
+            counted = True
+    if counted:
+        return round(total_months / 12, 1)
+    return candidate.get("experience_years")
+
+
+def _parse_month(value):
+    if not value:
+        return None
+    try:
+        text = str(value)
+        return date.fromisoformat(text if len(text) > 7 else f"{text}-01")
+    except ValueError:
+        return None
+
+
+def _assess_other_requirements(candidate, description, mandatory, normalized_text, add, reference_date=None):
+    reference_date = reference_date or date.today()
+
+    def first(predicate):
+        return next((sentence for sentence, normalized in mandatory if predicate(normalized)), "")
+
     # ---- YDS / yabancı dil -----------------------------------------------
-    yds_minimum, yds_required = None, False
-    for _, normalized in mandatory:
+    yds_minimum, yds_required, yds_quote = None, False, ""
+    for sentence, normalized in mandatory:
         if not re.search(r"\b(?:yds|e-yds|yokdil|yabanci dil|ingilizce|almanca|fransizca|arapca|rusca)\b", normalized):
             continue
         minimum_match = re.search(r"(?:en az|asgari)\s*(\d{2,3}(?:[.,]\d+)?)", normalized)
         if minimum_match and re.search(r"puan|duzey|seviye", normalized):
             yds_minimum = min(yds_minimum or 999.0, float(minimum_match.group(1).replace(",", ".")))
-            yds_required = True
+            yds_required, yds_quote = True, yds_quote or sentence
         elif any(term in normalized for term in ("puan almak", "puan almis olmak", "belgeye sahip olmak")):
-            yds_required = True
+            yds_required, yds_quote = True, yds_quote or sentence
             if "c duzeyinde" in normalized or "c seviye" in normalized:
                 yds_minimum = 70.0
     if yds_required and (yds_minimum is not None or not _has_zero_score_fallback(description)):
         yds = candidate.get("yds_score")
         if yds is None:
             detail = (
-                f"İlan en az {yds_minimum:g} YDS/yabancı dil puanı istiyor; profilde dil puanı yok."
-                if yds_minimum else "YDS/yabancı dil şartı var; profilde dil puanı yok."
+                f"İlan en az {yds_minimum:g} YDS/yabancı dil puanı istiyor; profilde dil puanı belirtilmemiş."
+                if yds_minimum else "YDS/yabancı dil şartı var; profilde dil puanı belirtilmemiş."
             )
-            add("YDS", "unknown", detail)
+            add("YDS", "unknown", detail, yds_quote)
         elif yds_minimum is not None and float(yds) < yds_minimum:
-            add("YDS", "not_met", f"YDS puanınız {float(yds):g}; ilan en az {yds_minimum:g} istiyor.")
+            add("YDS", "not_met", f"YDS puanınız {float(yds):g}; ilan en az {yds_minimum:g} istiyor.", yds_quote)
         else:
-            add("YDS", "met", f"YDS puanınız ({float(yds):g}) ilanın şartını karşılıyor.")
+            add("YDS", "met", f"YDS puanınız ({float(yds):g}) ilanın şartını karşılıyor.", yds_quote)
 
-    # ---- Yaş -------------------------------------------------------------
-    age_limit, age_required = None, False
-    for _, normalized in mandatory:
+    # ---- Yaş (başvuru tarihine göre) -------------------------------------
+    age_limit, age_required, age_quote = None, False, ""
+    for sentence, normalized in mandatory:
         match = re.search(
             r"(\d{2})\s*(?:\([^)]{0,20}\)\s*)?yas\w*\s+(?:gununu\s+)?(?:doldurmamis|bitirmemis|gun almamis|asmamis|gecmemis)",
             normalized,
         )
         if match:
-            age_limit, age_required = int(match.group(1)), True
+            age_limit, age_required, age_quote = int(match.group(1)), True, sentence
         elif "yas siniri" in normalized or "ust yas" in normalized:
-            age_required = True
+            age_required, age_quote = True, age_quote or sentence
     if age_required:
-        age = candidate.get("age")
+        age = candidate_age_on(candidate, reference_date)
+        when = f"{reference_date:%d.%m.%Y} itibarıyla"
         if age is None:
-            add("Yaş", "unknown", f"İlanda {f'{age_limit} ' if age_limit else ''}yaş sınırı var; profilde yaş girilmemiş.")
+            add("Yaş", "unknown", f"İlanda {f'{age_limit} ' if age_limit else ''}yaş sınırı var; profilde doğum tarihi belirtilmemiş.", age_quote)
         elif age_limit is not None and int(age) >= age_limit:
-            add("Yaş", "not_met", f"{int(age)} yaşındasınız; ilan {age_limit} yaşını doldurmamış olmayı istiyor.")
+            add("Yaş", "not_met", f"{when} {int(age)} yaşındasınız; ilan {age_limit} yaşını doldurmamış olmayı istiyor.", age_quote)
+        elif age_limit is None:
+            add("Yaş", "unknown", "İlanda yaş sınırı var ancak sınır metinden okunamadı; resmî ilandan doğrulayın.", age_quote)
         else:
-            add("Yaş", "met", f"{int(age)} yaşındasınız; yaş şartı karşılanıyor (ilandaki esas tarihi kontrol edin).")
+            add("Yaş", "met", f"{when} {int(age)} yaşındasınız; yaş şartı karşılanıyor (ilandaki esas tarihi ayrıca kontrol edin).", age_quote)
 
-    # ---- Deneyim ---------------------------------------------------------
-    experience_years, experience_required = None, False
-    for _, normalized in mandatory:
+    # ---- Deneyim (başvuru tarihine göre) ---------------------------------
+    experience_years, experience_required, experience_quote = None, False, ""
+    for sentence, normalized in mandatory:
         if not any(term in normalized for term in ("deneyim", "tecrube", "calismis olmak")):
             continue
         years = re.search(r"en az\s+(\d+)\s*(?:\([^)]*\)\s*)?yil", normalized)
         if years:
             experience_years, experience_required = min(experience_years or 99, int(years.group(1))), True
+            experience_quote = experience_quote or sentence
         elif re.search(r"sahip olmak|aranir|zorunlu|bulunmak", normalized):
-            experience_required = True
+            experience_required, experience_quote = True, experience_quote or sentence
     if experience_required:
-        have = candidate.get("experience_years")
-        if have is None:
-            add("Deneyim", "unknown", f"İlan {f'en az {experience_years} yıl ' if experience_years else ''}mesleki deneyim istiyor; profilde deneyim süresi yok.")
+        have = candidate_experience_on(candidate, reference_date)
+        wanted = f"en az {experience_years} yıl " if experience_years else ""
+        if candidate.get("experience_state") == "none":
+            add("Deneyim", "not_met", f"İlan {wanted}mesleki deneyim istiyor; profilinizde “mesleki deneyimim yok” işaretli.", experience_quote)
+        elif have is None:
+            add("Deneyim", "unknown", f"İlan {wanted}mesleki deneyim istiyor; profilde deneyim bilgisi belirtilmemiş.", experience_quote)
         elif experience_years is not None and float(have) < experience_years:
-            add("Deneyim", "not_met", f"Deneyiminiz {float(have):g} yıl; ilan en az {experience_years} yıl istiyor.")
+            add("Deneyim", "not_met", f"Başvuru tarihinde deneyiminiz {float(have):g} yıl; ilan en az {experience_years} yıl istiyor.", experience_quote)
         else:
-            add("Deneyim", "met", f"{float(have):g} yıllık deneyiminiz ilanın şartını karşılıyor.")
+            add("Deneyim", "met", f"{float(have):g} yıllık deneyiminiz ilanın şartını karşılıyor.", experience_quote)
 
     # ---- Sürücü belgesi --------------------------------------------------
-    if any(re.search(r"surucu belgesi|ehliyet", n) and re.search(r"zorunlu|sahip olmak|aranir|gereklidir", n) for _, n in mandatory):
+    license_quote = first(lambda n: re.search(r"surucu belgesi|ehliyet", n) and re.search(r"zorunlu|sahip olmak|aranir|gereklidir", n))
+    if license_quote:
         have = candidate.get("driver_license")
         if have is None:
-            add("Sürücü belgesi", "unknown", "Sürücü belgesi şartı var; profilde ehliyet bilgisi yok.")
+            add("Sürücü belgesi", "unknown", "Sürücü belgesi şartı var; profilde ehliyet bilgisi belirtilmemiş.", license_quote)
         elif have:
-            add("Sürücü belgesi", "met", "Sürücü belgesi şartı karşılanıyor.")
+            add("Sürücü belgesi", "met", "Sürücü belgesi şartı karşılanıyor (sınıfını ilandan kontrol edin).", license_quote)
         else:
-            add("Sürücü belgesi", "not_met", "İlan sürücü belgesi istiyor; sürücü belgeniz yok.")
+            add("Sürücü belgesi", "not_met", "İlan sürücü belgesi istiyor; profilinizde sürücü belgesi yok.", license_quote)
 
     # ---- Sertifika -------------------------------------------------------
-    cert_sentences = [
-        n for _, n in mandatory
+    cert_pairs = [
+        (sentence, n) for sentence, n in mandatory
         if "sertifika" in n and re.search(r"zorunlu|sahip olmak|belgelemek|ibraz|en az birine", n)
     ]
-    if cert_sentences:
+    # "Bilgisayar sertifikası VEYA okulda bilgisayar dersi görmüş olmak": iki seçenekten biri yeterlidir.
+    computer_option = next(
+        (pair for pair in cert_pairs if "bilgisayar" in pair[1] and "veya" in pair[1] and "bilgisayar dersi" in pair[1]), None,
+    )
+    if computer_option:
+        cert_pairs = [pair for pair in cert_pairs if not ("bilgisayar" in pair[1] and "sertifika" in pair[1])]
+        department = normalize_text(f"{candidate.get('department', '')} {candidate.get('department_aliases', '')}")
+        owned_text = normalize_text(str(candidate.get("certificates") or ""))
+        if any(word in department for word in ("bilgisayar", "yazilim", "bilisim")):
+            add("Bilgisayar belgesi", "met", "Sertifika ya da okulda bilgisayar dersi isteniyor; bölümünüz bilgisayar dersi içerir (transkriptle belgelenir).", computer_option[0])
+        elif "bilgisayar" in owned_text:
+            add("Bilgisayar belgesi", "met", "Profilinizde bilgisayar sertifikası var.", computer_option[0])
+        else:
+            add("Bilgisayar belgesi", "unknown", "Bilgisayar sertifikası ya da okulda bilgisayar dersi görmüş olmak isteniyor; transkriptinizden doğrulayın.", computer_option[0])
+    if cert_pairs:
+        quote = cert_pairs[0][0]
         owned = [normalize_text(c).strip() for c in re.split(r"[,;\n]", str(candidate.get("certificates") or "")) if c.strip()]
         if not owned:
-            add("Sertifika", "unknown", "Zorunlu sertifika şartı var; profilde sertifika yok.")
-        elif any(cert in sentence for cert in owned for sentence in cert_sentences):
-            add("Sertifika", "met", "Profildeki sertifika ilanın istediğiyle eşleşiyor.")
+            add("Sertifika", "unknown", "Zorunlu sertifika şartı var; profilde sertifika belirtilmemiş.", quote)
+        elif any(cert in n for cert in owned for _, n in cert_pairs):
+            add("Sertifika", "met", "Profildeki sertifika ilanın istediğiyle eşleşiyor.", quote)
         else:
-            add("Sertifika", "unknown", "Zorunlu sertifika şartı var; profildeki sertifikalarla eşleşme resmî ilandan doğrulanmalı.")
+            add("Sertifika", "unknown", "Zorunlu sertifika şartı var; profildeki sertifikalarla eşleşme resmî ilandan doğrulanmalı.", quote)
 
     # ---- Programlama dili belgeleme --------------------------------------
     if re.search(r"programlama dillerinden en az (?:iki|ikisini|2)", normalized_text):
+        quote = first(lambda n: "programlama dil" in n)
         if not candidate.get("programming_language_evidence"):
-            add("Programlama dilleri", "unknown", "En az iki programlama dilini bildiğini belgeleme şartı var; profilde kanıt yok.")
+            add("Programlama dilleri", "unknown", "En az iki programlama dilini bildiğini belgeleme şartı var; profilde belirtilmemiş.", quote)
         else:
-            add("Programlama dilleri", "met", "Profilde programlama dili kanıtı bulunuyor.")
+            add("Programlama dilleri", "met", "Profilde programlama dili bilgisi bulunuyor.", quote)
 
     # ---- Cinsiyet (kadro satırında belirtilmişse) --------------------------
     gender_match = re.search(r"cinsiyet\w*\s*[:：]?\s*(erkek|kadin)(?!\s*/|\s*(?:ve|veya)\s)", normalized_text)
@@ -830,25 +943,27 @@ def _assess_other_requirements(candidate, description, mandatory, normalized_tex
         have = normalize_text(str(candidate.get("gender") or "")).strip()
         label = "Erkek" if wanted == "erkek" else "Kadın"
         if not have:
-            add("Cinsiyet", "unknown", f"Kadro {label} adaylar için; profilde cinsiyet belirtilmemiş.")
+            add("Cinsiyet", "unknown", f"Kadro {label} adaylar için; profilde cinsiyet belirtilmemiş.", f"Cinsiyet: {label}")
         elif have == wanted:
-            add("Cinsiyet", "met", f"Kadro {label} adaylar için; profilinizle uyumlu.")
+            add("Cinsiyet", "met", f"Kadro {label} adaylar için; profilinizle uyumlu.", f"Cinsiyet: {label}")
         else:
-            add("Cinsiyet", "not_met", f"Kadro yalnızca {label} adaylar için.")
+            add("Cinsiyet", "not_met", f"Kadro yalnızca {label} adaylar için.", f"Cinsiyet: {label}")
 
     # ---- Boy / kilo (zabıta, itfaiye vb.) --------------------------------
-    if any(re.search(r"\bboy\w*", n) and re.search(r"1[.,]\d{2}\s*(?:m|metre)|\d{3}\s*cm|kilo", n) for _, n in mandatory):
-        add("Boy / kilo", "unknown", "İlanda boy-kilo şartı var; resmî ilandan kendi ölçülerinizle doğrulayın.")
+    body_quote = first(lambda n: re.search(r"\bboy\w*", n) and re.search(r"1[.,]\d{2}\s*(?:m|metre)|\d{3}\s*cm|kilo", n))
+    if body_quote:
+        add("Boy / kilo", "unknown", "İlanda boy-kilo şartı var; resmî ilandan kendi ölçülerinizle doğrulayın.", body_quote)
 
     # ---- Vardiya ---------------------------------------------------------
-    if any("vardiya" in n for _, n in mandatory):
+    shift_quote = first(lambda n: "vardiya" in n)
+    if shift_quote:
         shifts = candidate.get("accepts_shifts")
         if shifts is True:
-            add("Vardiya", "met", "Vardiyalı çalışma şartını kabul ediyorsunuz.")
+            add("Vardiya", "met", "Vardiyalı çalışma şartını kabul ediyorsunuz.", shift_quote)
         elif shifts is False:
-            add("Vardiya", "not_met", "İlan vardiyalı çalışma içeriyor; profilinizde vardiya kabul edilmiyor.")
+            add("Vardiya", "not_met", "İlan vardiyalı çalışma içeriyor; profilinizde vardiya kabul edilmiyor.", shift_quote)
         else:
-            add("Vardiya", "unknown", "Vardiyalı çalışma şartı var; profilde tercih belirtilmemiş.")
+            add("Vardiya", "unknown", "Vardiyalı çalışma şartı var; profilde tercih belirtilmemiş.", shift_quote)
 
 
 def _blank_to_none(value):
@@ -886,6 +1001,18 @@ def parse_kpss_scores(stored_profile) -> dict[str, float]:
     return scores
 
 
+def _json_list(value):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except ValueError:
+            return []
+    return []
+
+
 def build_candidate_profile(stored_profile=None):
     stored_profile = stored_profile or {}
     get = (
@@ -896,23 +1023,56 @@ def build_candidate_profile(stored_profile=None):
     scores = parse_kpss_scores(stored_profile)
     best_type = max(scores, key=scores.get) if scores else ""
     primary = "P3" if "P3" in scores else best_type
+
+    # Eğitim kayıtları varsa en yüksek düzey ve bütün bölümler kullanılır.
+    educations = [item for item in _json_list(get("educations")) if isinstance(item, dict)]
+    degree = get("degree") or ""
+    department = get("department") or ""
+    aliases = [get("department_aliases") or ""]
+    if educations:
+        ranked = sorted(educations, key=lambda item: degree_level(str(item.get("level") or "")) or 0, reverse=True)
+        degree = str(ranked[0].get("level") or degree)
+        top_level = degree_level(degree) or 0
+        departments = [str(item.get("department") or "").strip() for item in ranked if str(item.get("department") or "").strip()]
+        # Bölüm eşleşmesinde yalnızca en yüksek düzeydeki (ve lisans üstü) kayıtlar esas alınır.
+        primary_departments = [
+            str(item.get("department") or "").strip() for item in ranked
+            if (degree_level(str(item.get("level") or "")) or 0) >= min(top_level, 3) and str(item.get("department") or "").strip()
+        ] or departments
+        if primary_departments:
+            department = primary_departments[0]
+            aliases.extend(primary_departments[1:])
+
+    birth = get("birth_date")
+    experiences = [item for item in _json_list(get("experiences")) if isinstance(item, dict)]
+    preferences = get("preferences")
+    if isinstance(preferences, str):
+        try:
+            preferences = json.loads(preferences or "{}")
+        except ValueError:
+            preferences = {}
     return {
-        "degree": get("degree") or "",
-        "department": get("department") or "",
-        "department_aliases": get("department_aliases") or "",
+        "degree": degree,
+        "department": department,
+        "department_aliases": ", ".join(item for item in aliases if item),
         "faculty": get("faculty") or "",
         "university": get("university") or "",
         "kpss_score_type": primary,
         "kpss_score": scores.get(primary),
         "kpss_scores": scores,
         "preferred_locations": get("preferred_locations") or "Türkiye geneli",
+        "preferences": preferences if isinstance(preferences, dict) else {},
         "accepts_shifts": get("accepts_shifts"),
         "yds_score": _blank_to_none(get("yds_score")),
         "age": _blank_to_none(get("age")),
+        "birth_date": birth.isoformat() if isinstance(birth, date) else (birth or None),
         "driver_license": _blank_to_none(get("driver_license")),
         "gender": get("gender") or "",
         "special_status": get("special_status") or "",
+        "military_status": get("military_status") or "",
         "experience_years": _blank_to_none(get("experience_years")),
+        "experiences": experiences,
+        "experience_state": get("experience_state") or "",
         "has_internship": _blank_to_none(get("has_internship")),
         "internship_description": get("internship_description") or "",
         "certificates": _blank_to_none(get("certificates")),

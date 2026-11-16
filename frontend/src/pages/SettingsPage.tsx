@@ -2,16 +2,13 @@ import { useEffect, useState, type FormEvent } from "react";
 import { BellRing, LogOut, Save, Send } from "lucide-react";
 import { PageHeader } from "../components/shared/PageHeader";
 import { QueryState } from "../components/shared/QueryState";
-import { getApiUrl } from "../services/api/client";
-import { useHealth, useNotificationSettings, useSaveNotificationSettings, useTestNotification } from "../services/api/hooks";
+import { useNotificationSettings, useSaveNotificationSettings, useTestNotification } from "../services/api/hooks";
 import type { MatchCategory, NotificationSettings } from "../types/api";
 
 export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
-  const health = useHealth();
   const query = useNotificationSettings();
   const save = useSaveNotificationSettings();
   const test = useTestNotification();
-  const readOnly = health.data?.read_only ?? true;
   const [draft, setDraft] = useState<NotificationSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [permission, setPermission] = useState(() => ("Notification" in window ? Notification.permission : "unsupported"));
@@ -36,12 +33,12 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
   }
 
   return (
-    <QueryState isLoading={query.isLoading || health.isLoading || !draft} error={query.error ?? health.error}>
+    <QueryState isLoading={query.isLoading || !draft} error={query.error}>
       {draft && (
         <>
           <PageHeader title="Ayarlar" description="Hangi ilanlar için, hangi kanaldan haber almak istediğinizi belirleyin." />
           <form className="form-sections" onSubmit={submit}>
-            <fieldset disabled={readOnly} className="form-sections">
+            <fieldset className="form-sections">
               <section className="form-section">
                 <div className="form-section-head"><h2>Ne zaman bildirim gelsin?</h2><p>Bildirimler her kaynak taramasından sonra oluşturulur.</p></div>
                 <div className="check-stack">
@@ -88,13 +85,8 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
             </fieldset>
 
             <section className="form-section">
-              <div className="form-section-head"><h2>Bağlantı</h2></div>
-              <dl className="fact-list">
-                <div><dt>API adresi</dt><dd>{getApiUrl()}</dd></div>
-                <div><dt>Sürüm</dt><dd>{health.data?.version}</dd></div>
-                <div><dt>Çalışma modu</dt><dd>{readOnly ? "Salt okunur" : "Düzenlenebilir"}</dd></div>
-                <div><dt>Otomatik tarama</dt><dd>{health.data?.auto_sync_hours ? `${health.data.auto_sync_hours} saatte bir` : "Kapalı"}</dd></div>
-              </dl>
+              <div className="form-section-head"><h2>Oturum</h2></div>
+<p className="muted">Şifreniz tarayıcıda saklanmaz; oturum sunucuda tutulur ve “Oturumu kapat” ile geçersiz olur.</p>
               <div className="button-row"><button type="button" className="button" onClick={onLogout}><LogOut size={16} /> Oturumu kapat</button></div>
             </section>
           </form>

@@ -39,6 +39,15 @@ def ensure_sqlite_database_file_exists(database_url: str) -> None:
     else:
         database_path = Path(database)
 
+    seed = BASE_DIR / "careerpilot.db"
+    seeding = os.getenv("CAREERPILOT_DB_SEED_FROM_REPO", "").strip().casefold() in {"1", "true", "yes", "on"}
+    if seeding and not database_path.is_file() and seed.is_file() and database_path.resolve() != seed.resolve():
+        # Kalıcı diskteki veritabanı ilk açılışta depodaki ilan verisiyle başlatılır.
+        import shutil
+
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(seed, database_path)
+        return
     if not database_path.is_file():
         if os.getenv("CAREERPILOT_DB_AUTOCREATE", "").strip().casefold() in {"1", "true", "yes", "on"}:
             database_path.parent.mkdir(parents=True, exist_ok=True)

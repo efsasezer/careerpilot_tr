@@ -42,7 +42,7 @@ class BulkJobCreate(BaseModel):
 
 
 class TrackingUpdate(BaseModel):
-    tracking: str = Field(default="", pattern="^(|saved|applied|hidden)$")
+    tracking: str = Field(default="", pattern="^(|saved|applied|awaiting|won|lost|hidden)$")
     notes: str | None = Field(default=None, max_length=5000)
 
 
@@ -53,6 +53,13 @@ class ProfileUpdate(BaseModel):
     faculty: str = Field(default="", max_length=200)
     gender: str = Field(default="", pattern="^(|Kadın|Erkek)$")
     special_status: str = Field(default="", max_length=100)
+    birth_date: date | None = None
+    military_status: str = Field(default="", max_length=40)
+    educations: list[dict] = Field(default_factory=list, max_length=12)
+    experiences: list[dict] = Field(default_factory=list, max_length=40)
+    experience_state: str = Field(default="", pattern="^(|none|has)$")
+    foreign_language: str = Field(default="", max_length=200)
+    preferences: dict = Field(default_factory=dict)
     university: str = Field(default="", max_length=300)
     # Geriye dönük uyumluluk: tek puan türü/puanı. Yeni istemciler kpss_scores gönderir.
     kpss_score_type: str = Field(default="P3", max_length=30)
@@ -116,3 +123,39 @@ class NotificationSettings(BaseModel):
         if value and ("@" not in value or " " in value or "\n" in value):
             raise ValueError("Geçerli bir e-posta adresi girin")
         return value
+
+
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=500)
+
+
+class VerificationUpdate(BaseModel):
+    decision: str = Field(pattern="^(eligible|not_eligible)$")
+    position_id: str = Field(default="", max_length=120)
+    note: str = Field(default="", max_length=2000)
+
+
+class EventUpdate(BaseModel):
+    kind: str = Field(pattern="^(application_start|application_deadline|exam|interview|result|documents|appointment)$")
+    event_date: date
+    end_date: date | None = None
+    event_time: str = Field(default="", pattern="^(|[0-2][0-9]:[0-5][0-9])$")
+    title: str = Field(default="", max_length=300)
+    url: str = Field(default="", max_length=1000)
+
+
+class TaskUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=4000)
+    task_date: date
+    start_time: str = Field(default="", pattern="^(|[0-2][0-9]:[0-5][0-9])$")
+    end_time: str = Field(default="", pattern="^(|[0-2][0-9]:[0-5][0-9])$")
+    priority: str = Field(default="normal", pattern="^(low|normal|high)$")
+    recurrence: str = Field(default="none", pattern="^(none|daily|weekly|weekdays|monthly)$")
+    weekdays: list[int] = Field(default_factory=list)
+    until: date | None = None
+
+
+class TaskCompletion(BaseModel):
+    day: date
+    done: bool = True

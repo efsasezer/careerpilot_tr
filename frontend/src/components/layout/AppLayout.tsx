@@ -1,14 +1,16 @@
-import { Bell, Bookmark, CalendarDays, Compass, LayoutDashboard, ListChecks, LogOut, Menu, Radio, RefreshCw, Settings, UserRound, X } from "lucide-react";
+import { Bell, Bookmark, BookmarkCheck, CalendarDays, Compass, LayoutDashboard, ListChecks, LogOut, Menu, Radio, RefreshCw, SendHorizontal, Settings, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { JobDrawer } from "../jobs/JobDrawer";
-import { useHealth, useNotifications, useSyncStatus } from "../../services/api/hooks";
+import { useMatches, useNotifications, useSyncStatus } from "../../services/api/hooks";
 
 const navigation = [
   { to: "/", label: "Özet", icon: LayoutDashboard, end: true },
   { to: "/jobs", label: "İlanlar", icon: ListChecks },
   { to: "/tracked", label: "Takip listem", icon: Bookmark },
+  { to: "/saved", label: "Kaydettiklerim", icon: BookmarkCheck },
+  { to: "/applied", label: "Başvurduklarım", icon: SendHorizontal },
   { to: "/calendar", label: "Başvuru takvimi", icon: CalendarDays },
   { to: "/notifications", label: "Bildirimler", icon: Bell },
   { to: "/sources", label: "Kaynaklar", icon: Radio },
@@ -18,7 +20,12 @@ const navigation = [
 
 export function AppLayout({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const health = useHealth();
+  const matches = useMatches();
+  const counts = { "/saved": new Set<number>(), "/applied": new Set<number>() };
+  for (const job of matches.data?.jobs ?? []) {
+    if (job.tracking === "saved") counts["/saved"].add(job.parent_job_id);
+    if (["applied", "awaiting", "won", "lost"].includes(job.tracking)) counts["/applied"].add(job.parent_job_id);
+  }
   const notifications = useNotifications();
   const sync = useSyncStatus();
   const queryClient = useQueryClient();
@@ -61,11 +68,11 @@ export function AppLayout({ children, onLogout }: { children: ReactNode; onLogou
               <Icon size={18} strokeWidth={1.8} aria-hidden />
               <span>{label}</span>
               {to === "/notifications" && unread > 0 && <span className="nav-count">{unread > 99 ? "99+" : unread}</span>}
+              {(to === "/saved" || to === "/applied") && counts[to].size > 0 && <span className="nav-count nav-count-soft">{counts[to].size}</span>}
             </NavLink>
           ))}
         </nav>
         <div className="sidebar-foot">
-          {health.data?.read_only && <p className="sidebar-note">Salt okunur yayın: veriler değiştirilemez.</p>}
           <button className="nav-link" onClick={onLogout}><LogOut size={18} strokeWidth={1.8} aria-hidden /><span>Oturumu kapat</span></button>
         </div>
       </aside>

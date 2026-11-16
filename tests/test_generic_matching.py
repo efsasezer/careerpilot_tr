@@ -1,6 +1,6 @@
 """Motorun belirli bir bölüme bağlı olmadığını ve yeni özellikleri doğrulayan testler."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -10,7 +10,7 @@ from backend.database import Base
 from backend.documents import _generic_table_positions
 from backend.eligibility import build_candidate_profile, classify_public_job
 from backend.matching import build_matches
-from backend.models import CandidateProfile, Job, Notification
+from backend.models import CandidateProfile, Job, Notification, UserJobState
 from backend.schemas import NotificationSettings, ProfileUpdate, TrackingUpdate
 from backend.sync import _mark_cancelled, application_window_from_text, organization_key
 
@@ -238,7 +238,9 @@ def test_failed_channel_is_retried_and_hidden_jobs_are_skipped(monkeypatch):
     with _database() as db:
         db.add(CandidateProfile(id=1, degree="Lisans", department="İktisat", kpss_scores='{"P48": 85}'))
         db.add(_job(application_deadline=date.today() + timedelta(days=20)))
-        db.add(_job(organization="Gizlenen Kurum", tracking="hidden", application_deadline=date.today() + timedelta(days=20)))
+        db.add(_job(organization="Gizlenen Kurum", application_deadline=date.today() + timedelta(days=20)))
+        db.flush()
+        db.add(UserJobState(job_id=2, tracking="hidden", notes="", updated_at=datetime.now()))
         db.commit()
         notifications.save_settings(db, NotificationSettings(email_enabled=True, email_to="aday@example.com"))
 
@@ -278,49 +280,23 @@ def test_vague_or_partial_cancellation_never_cancels_but_flags_for_review():
         assert all(item["review_required"] and item["cancellation_notice"] and not item["is_expired"] for item in items)
 
 
-def test_local_requests_work_without_token_but_remote_requests_do_not(monkeypatch):
-    import asyncio
-    from starlette.requests import Request
-    from starlette.responses import Response
-
-    monkeypatch.delenv("CAREERPILOT_ACCESS_TOKEN", raising=False)
-    monkeypatch.delenv("RENDER", raising=False)
-
-    def request(client, headers=()):
-        return Request({
-            "type": "http", "http_version": "1.1", "method": "PUT", "scheme": "http", "path": "/profile",
-            "raw_path": b"/profile", "query_string": b"", "root_path": "",
-            "headers": [(name.encode(), value.encode()) for name, value in headers],
-            "client": (client, 50000), "server": ("testserver", 80),
-        })
-
-    async def call_next(_request):
-        return Response(status_code=204)
-
-    run = lambda req: asyncio.run(main.restrict_api(req, call_next)).status_code
-    assert run(request("127.0.0.1")) == 204
-    assert run(request("203.0.113.9")) == 503
-    assert run(request("127.0.0.1", [("x-forwarded-for", "203.0.113.9")])) == 503  # vekil sunucu arkasında
-    monkeypatch.setenv("RENDER", "true")
-    assert run(request("127.0.0.1")) == 503
-    monkeypatch.delenv("RENDER")
-    monkeypatch.setenv("CAREERPILOT_ACCESS_TOKEN", "secret")
-    assert run(request("127.0.0.1")) == 401  # anahtar tanımlıysa yerelde de istenir
-
-
 def test_legacy_rows_are_archived_not_deleted_and_stay_out_of_matching():
     from backend.sync import cleanup_legacy_rows
 
     with _database() as db:
         db.add(_job(title="9 MEMUR ALACAK", description="uzun metin " * 40))
-        db.add(_job(title="9 MEMUR ALACAK", description="kısa", tracking="saved"))
+        db.add(_job(title="9 MEMUR ALACAK", description="kısa"))
+        db.flush()
+        db.add(UserJobState(job_id=2, tracking="saved", notes="not", updated_at=datetime.now()))
         db.add(_job(source_name="Yerel Yönetimler Genel Müdürlüğü", title="Personel Hizmetleri Rehberleri", organization="Yerel Yönetim"))
         db.commit()
         assert cleanup_legacy_rows(db) == {"archived": 2}
         assert cleanup_legacy_rows(db) == {"archived": 0}
         jobs = list(db.scalars(select(Job).order_by(Job.id)).all())
         assert len(jobs) == 3  # hiçbir kayıt silinmez
-        assert jobs[0].archived_reason == "" and jobs[0].tracking == "saved"
+        assert jobs[0].archived_reason == ""
+        # Kopyadaki takip durumu ve not, asıl kayda taşınır.
+        assert db.get(UserJobState, 1).tracking == "saved" and db.get(UserJobState, 2) is None
         assert "kopya" in jobs[1].archived_reason and "İlan değil" in jobs[2].archived_reason
         assert build_matches(db, full=False)["counts"]["total"] == 1
 

@@ -37,6 +37,10 @@ class DocumentParseError(RuntimeError):
     pass
 
 
+class ScannedDocumentError(DocumentParseError):
+    """Metin katmanı olmayan (taranmış) belge; OCR da okuyamadı ya da kullanılamıyor."""
+
+
 def _validate_official_url(url: str) -> str:
     parsed = urlsplit(url)
     hostname = (parsed.hostname or "").rstrip(".").casefold()

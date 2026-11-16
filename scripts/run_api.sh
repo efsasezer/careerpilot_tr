@@ -12,8 +12,9 @@ if [ -f .env ]; then
   set +a
 fi
 
-if [ -z "$CAREERPILOT_ACCESS_TOKEN" ]; then
-  echo "Erişim anahtarı tanımlı değil: API yalnızca bu bilgisayardan gelen isteklere anahtarsız yanıt verir."
+if [ -z "$CAREERPILOT_PASSWORD" ] || [ -z "$CAREERPILOT_SESSION_SECRET" ]; then
+  echo "UYARI: .env dosyasında CAREERPILOT_PASSWORD ve CAREERPILOT_SESSION_SECRET tanımlı değil; giriş yapılamaz."
+  echo "       .env.example dosyasını .env olarak kopyalayıp doldurun."
 fi
 
 exec "$PYTHON" -m uvicorn backend.main:app --host "${HOST:-127.0.0.1}" --port "${PORT:-8000}" "$@"

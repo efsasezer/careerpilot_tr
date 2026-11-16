@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, CircleX, Clock3, FileText } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleMinus, CircleX, Clock3, FileText } from "lucide-react";
 import type { MatchCategory, RequirementStatus } from "../../types/api";
 import { CATEGORY_LABEL, deadlineLabel } from "../../utils/format";
 
@@ -30,7 +30,8 @@ export function DeadlineChip({ daysLeft, status }: { daysLeft: number | null; st
 const DATA_LABEL = {
   read: "Resmî metin okundu",
   partial: "Ek belge okunamadı",
-  listing_only: "Yalnızca liste bilgisi",
+  listing_only: "İlan metni okunamadı",
+  ocr: "OCR ile okundu, kontrol et",
 } as const;
 
 export function DataStatusChip({ status, always = false }: { status: keyof typeof DATA_LABEL; always?: boolean }) {
@@ -38,8 +39,12 @@ export function DataStatusChip({ status, always = false }: { status: keyof typeo
   return <span className={`chip ${status === "read" ? "" : "chip-warn"}`}><FileText size={13} aria-hidden /> {DATA_LABEL[status]}</span>;
 }
 
+export const STATUS_LABEL: Record<RequirementStatus, string> = {
+  met: "Karşılıyor", not_met: "Karşılamıyor", unknown: "Bilinmiyor", not_required: "Aranmıyor",
+};
+
 export function StatusDot({ status }: { status: RequirementStatus }) {
-  const Icon = status === "met" ? CircleCheck : status === "not_met" ? CircleX : CircleAlert;
-  const label = status === "met" ? "Karşılanıyor" : status === "not_met" ? "Karşılanmıyor" : "Doğrulanmalı";
+  const Icon = status === "met" ? CircleCheck : status === "not_met" ? CircleX : status === "not_required" ? CircleMinus : CircleAlert;
+  const label = STATUS_LABEL[status];
   return <Icon size={17} className={`status-${status}`} aria-label={label} />;
 }

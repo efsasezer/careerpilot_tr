@@ -2,7 +2,6 @@ import { lazy, Suspense, useState, type FormEvent } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { Compass, LoaderCircle } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../services/api/client";
 import { useAuth } from "../services/api/auth";
 import { AppLayout } from "../components/layout/AppLayout";
 
@@ -15,22 +14,22 @@ const NotificationsPage = lazy(() => import("../pages/NotificationsPage"));
 const SettingsPage = lazy(() => import("../pages/SettingsPage"));
 
 function SignInPage() {
-  const [accessKey, setAccessKey] = useState("");
-  const [remember, setRemember] = useState(false);
+  const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
-  const { signIn, isChecking } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const { signIn, configError } = useAuth();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMessage("");
+    setBusy(true);
     try {
-      await signIn(accessKey.trim(), remember);
+      await signIn(password);
     } catch (error) {
-      setMessage(
-        error instanceof ApiError && error.status === 401 ? "Erişim anahtarı doğrulanamadı."
-          : error instanceof ApiError ? error.message
-          : "Sunucuya ulaşılamadı. API'nin çalıştığını kontrol edin.",
-      );
+      setMessage(error instanceof Error ? error.message : "Giriş yapılamadı.");
+    } finally {
+      setBusy(false);
+      setPassword("");
     }
   }
 
@@ -39,19 +38,18 @@ function SignInPage() {
       <section className="signin-intro">
         <span className="brand-mark brand-mark-large"><Compass size={26} aria-hidden /></span>
         <h1>Size uyan kamu ilanını kaçırmayın.</h1>
-        <p>CareerPilot TR resmî ilan kaynaklarını tarar, her ilanı öğrenim durumunuz ve KPSS puanlarınızla karşılaştırır ve uygun olanları size bildirir.</p>
+        <p>CareerPilot TR resmî ilan kaynaklarını tarar, her kadroyu öğrenim durumunuz ve KPSS puanlarınızla karşılaştırır ve başvuru tarihlerini takviminize işler.</p>
       </section>
       <form onSubmit={submit} className="signin-form">
         <h2>Oturum aç</h2>
+        {configError && <p className="notice notice-bad" role="alert">{configError}</p>}
         <label className="field">
-          <span>Erişim anahtarı</span>
-          <input id="access-key" type="password" autoComplete="current-password" value={accessKey} onChange={(event) => setAccessKey(event.target.value)} required />
-          <small>Sunucudaki CAREERPILOT_ACCESS_TOKEN değeri.</small>
+          <span>Şifre</span>
+          <input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
         </label>
-        <label className="check-field"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Bu cihazda oturumu açık tut</label>
         {message && <p className="field-error" role="alert">{message}</p>}
-        <button className="button button-primary button-wide" disabled={isChecking}>
-          {isChecking && <LoaderCircle className="spin" size={17} aria-hidden />} Giriş yap
+        <button className="button button-primary button-wide" disabled={busy}>
+          {busy && <LoaderCircle className="spin" size={17} aria-hidden />} Giriş yap
         </button>
       </form>
     </main>
@@ -59,17 +57,16 @@ function SignInPage() {
 }
 
 export default function App() {
-  const { token, isChecking, signOut } = useAuth();
+  const { authenticated, isChecking, signOut } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  if (!token) {
-    return isChecking ? <div className="page-loading"><LoaderCircle className="spin" aria-hidden /> Oturum doğrulanıyor…</div> : <SignInPage />;
-  }
+  if (isChecking) return <div className="page-loading"><LoaderCircle className="spin" aria-hidden /> Oturum kontrol ediliyor…</div>;
+  if (!authenticated) return <SignInPage />;
 
-  function logout() {
+  async function logout() {
+    await signOut();
     queryClient.clear();
-    signOut();
     navigate("/");
   }
 
@@ -79,7 +76,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/jobs" element={<JobsPage />} />
-          <Route path="/tracked" element={<JobsPage tracked key="tracked" />} />
+          <Route path="/tracked" element={<JobsPage mode="tracked" key="tracked" />} />
+          <Route path="/saved" element={<JobsPage mode="saved" key="saved" />} />
+          <Route path="/applied" element={<JobsPage mode="applied" key="applied" />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/sources" element={<SourcesPage />} />
