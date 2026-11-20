@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bookmark, CalendarPlus, CheckCheck, ExternalLink, EyeOff, FileText, Trash2, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { CategoryBadge, DataStatusChip, DeadlineChip, STATUS_LABEL, StatusDot } from "../shared/Badges";
@@ -6,7 +6,7 @@ import { QueryState } from "../shared/QueryState";
 import { VerifyButtons } from "./VerifyButtons";
 import { getApiUrl } from "../../services/api/client";
 import {
-  useAcknowledgeUpdate, useAddEvent, useDeleteEvent, useJobDetail, useRetryReading, useSetTracking, useSetVerification,
+  useAcknowledgeUpdate, useAddEvent, useDeleteEvent, useJobDetail, useRetryReading, useSetTracking, useSetVerification, useVerifyEvent,
 } from "../../services/api/hooks";
 import type { JobDetail, MatchedPosition, Tracking } from "../../types/api";
 import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp } from "../../utils/format";
@@ -59,6 +59,12 @@ function DrawerBody({ job }: { job: JobDetail }) {
   const [verifyNote, setVerifyNote] = useState(job.job_verification?.note ?? "");
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfError, setPdfError] = useState("");
+  const [sourceText, setSourceText] = useState(job.description);
+  const [sourceTextError, setSourceTextError] = useState("");
+  const [sourceTextLoading, setSourceTextLoading] = useState(false);
+  const [sourceTextOpen, setSourceTextOpen] = useState(false);
+  const previewRef = useRef<HTMLElement>(null);
+  const sourceTextRef = useRef<HTMLDetailsElement>(null);
   const positions = [...job.positions].sort((a, b) => ORDER[a.category] - ORDER[b.category]);
   const [selectedId, setSelectedId] = useState(positions[0].id);
   const selected = positions.find((item) => item.id === selectedId) ?? positions[0];
@@ -69,6 +75,12 @@ function DrawerBody({ job }: { job: JobDetail }) {
   const hasResultDate = job.events.some((event) => event.kind === "result");
 
   useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl); }, [pdfUrl]);
+  useEffect(() => {
+    if (pdfUrl || pdfError || sourceTextError) previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [pdfUrl, pdfError, sourceTextError]);
+  useEffect(() => {
+    if (sourceTextOpen) sourceTextRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [sourceTextOpen, sourceText]);
 
   function setTracking(value: Tracking) {
     tracking.mutate({ jobId: job.id, tracking: current === value ? "" : value, notes });
@@ -83,6 +95,25 @@ function DrawerBody({ job }: { job: JobDetail }) {
     } catch (error) {
       setPdfError(error instanceof Error ? error.message : "PDF alınamadı.");
     }
+  }
+
+  async function showSourceText() {
+    setSourceTextError("");
+    if (!sourceText) {
+      setSourceTextLoading(true);
+      try {
+        const response = await fetch(`${getApiUrl()}/jobs/${job.id}/source-text`, { credentials: "include" });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(data?.detail ?? "İlan metni alınamadı.");
+        setSourceText(String(data?.text ?? ""));
+      } catch (error) {
+        setSourceTextError(error instanceof Error ? error.message : "İlan metni alınamadı.");
+        return;
+      } finally {
+        setSourceTextLoading(false);
+      }
+    }
+    setSourceTextOpen(true);
   }
 
   return (
@@ -125,6 +156,8 @@ function DrawerBody({ job }: { job: JobDetail }) {
         <button className={`button ${current === "hidden" ? "button-active" : ""}`} onClick={() => setTracking("hidden")}>
           <EyeOff size={16} /> {current === "hidden" ? "Gizlendi" : "İlgilenmiyorum"}
         </button>
+        {job.has_pdf && <button className="button" onClick={showPdf}><FileText size={16} /> Resmî PDF'i oku</button>}
+        {(job.description || job.source_url) && <button className="button" disabled={sourceTextLoading} onClick={showSourceText}><FileText size={16} /> {sourceTextLoading ? "İlan metni alınıyor…" : "İlan metnini oku"}</button>}
         {job.source_url && (
           <a className="button button-primary" href={job.source_url} target="_blank" rel="noreferrer">
             Resmî ilana git <ExternalLink size={15} />
@@ -160,17 +193,17 @@ function DrawerBody({ job }: { job: JobDetail }) {
         <p className="hint">Kararınız sistemin hesabından ayrı saklanır; yeniden tarama ve profil değişikliği kararınızı değiştirmez.</p>
       </section>
 
-      {(needsManual || job.has_pdf) && (
-        <section className="drawer-section">
-          <h3>Resmî belge</h3>
+      {(needsManual || job.has_pdf || job.description || job.source_url) && (
+        <section className="drawer-section" ref={previewRef}>
+          <h3>Resmî belge ve ilan metni</h3>
           {selected.data_status === "listing_only" && <p className="notice notice-warn">İlan metni otomatik okunamadı (taranmış PDF olabilir). Tahminle karar verilmedi; PDF'i açıp yukarıdan elle doğrulayın.</p>}
           {selected.data_status === "ocr" && <p className="notice notice-warn">Bu ilan taranmış PDF'ten OCR ile okundu (güven %{Math.round((selected.ocr_confidence ?? 0) * 100)}). Harf ve sayılar hatalı olabilir; PDF ile karşılaştırıp elle doğrulayın.</p>}
           <div className="button-row">
-            {job.has_pdf && <button className="button" onClick={showPdf}><FileText size={16} /> Resmî PDF'i aç</button>}
             {needsManual && <button className="button" disabled={retry.isPending} onClick={() => retry.mutate(job.id)}>{retry.isPending ? "Okunuyor…" : "OCR'la yeniden dene"}</button>}
           </div>
           {retry.data && <p className="hint">{retry.data.status === "failed" ? `Okunamadı: ${retry.data.error}` : retry.data.status === "ocr" ? "OCR ile okundu; şartları kontrol edin." : "Belge okundu."}</p>}
           {pdfError && <p className="field-error" role="alert">{pdfError}</p>}
+          {sourceTextError && <p className="field-error" role="alert">{sourceTextError}</p>}
           {pdfUrl && <iframe className="pdf-frame" src={pdfUrl} title="Resmî ilan PDF'i" />}
         </section>
       )}
@@ -229,10 +262,10 @@ function DrawerBody({ job }: { job: JobDetail }) {
         </section>
       )}
 
-      {job.description && (
-        <details className="drawer-section drawer-text">
+      {sourceText && (
+        <details ref={sourceTextRef} open={sourceTextOpen} onToggle={(event) => setSourceTextOpen(event.currentTarget.open)} className="drawer-section drawer-text">
           <summary>Resmî ilan metni</summary>
-          <pre>{job.description}</pre>
+          <pre>{sourceText}</pre>
         </details>
       )}
       <p className="hint">Bu değerlendirme otomatik bir ön elemedir; başvurmadan önce resmî ilanı mutlaka okuyun.</p>
@@ -242,6 +275,7 @@ function DrawerBody({ job }: { job: JobDetail }) {
 
 function EventRow({ event }: { event: JobDetail["events"][number] }) {
   const remove = useDeleteEvent();
+  const verifyEvent = useVerifyEvent();
   return (
     <li>
       <div>
@@ -253,7 +287,11 @@ function EventRow({ event }: { event: JobDetail["events"][number] }) {
         {event.url && <a href={event.url} target="_blank" rel="noreferrer">{event.url.replace(/^https?:\/\//, "")} <ExternalLink size={12} /></a>}
         {event.evidence && <details><summary>Bu bilgi nereden alındı?</summary><p>{event.evidence}</p></details>}
       </div>
-      <button className="icon-button" aria-label={`${event.label} olayını sil`} disabled={remove.isPending} onClick={() => remove.mutate(event.id)}><Trash2 size={16} /></button>
+      <div className="button-row">
+        {!event.verified && <button className="button button-small" disabled={verifyEvent.isPending} onClick={() => verifyEvent.mutate(event.id)}>Tarihi doğrula</button>}
+        {event.verified && <span className="chip chip-accent">Doğrulandı</span>}
+        <button className="icon-button" aria-label={`${event.label} olayını sil`} disabled={remove.isPending} onClick={() => remove.mutate(event.id)}><Trash2 size={16} /></button>
+      </div>
     </li>
   );
 }
@@ -263,14 +301,23 @@ function AddEvent({ jobId, prompt, kind }: { jobId: number; prompt: string; kind
   const [open, setOpen] = useState(false);
   const [selectedKind, setSelectedKind] = useState(kind);
   const [day, setDay] = useState("");
+  const [time, setTime] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [url, setUrl] = useState("");
   if (!open) return <button className="text-button" onClick={() => setOpen(true)}><CalendarPlus size={15} /> {prompt}</button>;
   return (
-    <form className="inline-form" onSubmit={(event) => { event.preventDefault(); if (day) add.mutate({ jobId, kind: selectedKind, event_date: day }, { onSuccess: () => { setOpen(false); setDay(""); } }); }}>
+    <form className="inline-form event-form" onSubmit={(event) => { event.preventDefault(); if (day) add.mutate({ jobId, kind: selectedKind, event_date: day, event_time: time, title, evidence: description, url }, { onSuccess: () => { setOpen(false); setDay(""); setTime(""); setTitle(""); setDescription(""); setUrl(""); } }); }}>
       <select aria-label="Olay türü" value={selectedKind} onChange={(event) => setSelectedKind(event.target.value)}>
+        <option value="application_start">Başvuru başlangıcı</option><option value="application_deadline">Son başvuru tarihi</option>
         <option value="exam">Sınav</option><option value="interview">Sözlü / mülakat</option><option value="result">Sonuç açıklanacak</option>
         <option value="documents">Evrak teslimi</option><option value="appointment">Atama</option>
       </select>
       <input type="date" aria-label="Tarih" value={day} onChange={(event) => setDay(event.target.value)} required />
+      <input type="time" aria-label="Saat (isteğe bağlı)" value={time} onChange={(event) => setTime(event.target.value)} />
+      <input aria-label="Başlık (isteğe bağlı)" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Etkinlik başlığı" />
+      <input aria-label="Açıklama (isteğe bağlı)" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Açıklama" />
+      <input type="url" aria-label="Kaynak bağlantısı (isteğe bağlı)" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Kaynak bağlantısı" />
       <button className="button button-small button-primary" disabled={add.isPending}>Ekle</button>
       <button type="button" className="button button-small" onClick={() => setOpen(false)}>Vazgeç</button>
       {add.error && <span className="field-error" role="alert">{add.error.message}</span>}

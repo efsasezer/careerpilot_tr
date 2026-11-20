@@ -1,7 +1,10 @@
 
+import asyncio
+from contextlib import contextmanager
 import re
 from functools import lru_cache
 from html.parser import HTMLParser
+import time
 from urllib.parse import urlsplit
 
 try:  # Playwright yalnızca Kariyer Kapısı taraması için gerekir; yoksa diğer kaynaklar çalışmaya devam eder.
@@ -19,6 +22,24 @@ except ImportError:  # pragma: no cover - isteğe bağlı bağımlılık
 
 URL = "https://kariyerkapisi.gov.tr/isealim"
 DETAIL_MARKER = "--- Kariyer Kapısı ilan detayları ---"
+
+
+@contextmanager
+def _playwright_event_loop_policy():
+    """Playwright needs subprocess support; Uvicorn may install Windows' selector policy."""
+    if not hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
+        yield
+        return
+    previous = asyncio.get_event_loop_policy()
+    if isinstance(previous, asyncio.WindowsSelectorEventLoopPolicy):
+        # Playwright's sync API creates its own event loop in this worker thread.
+        # A selector loop cannot launch the Playwright driver on Windows.
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        yield
+    finally:
+        if isinstance(previous, asyncio.WindowsSelectorEventLoopPolicy):
+            asyncio.set_event_loop_policy(previous)
 
 
 class _VisibleContent(HTMLParser):
@@ -163,7 +184,7 @@ def scrape_public_listing_details(listings):
     """Visit Kariyer Kapısı detail pages; one failed page won't stop other listings."""
     urls = [item["url"] for item in listings if item.get("url")]
     outcomes = {}
-    with sync_playwright() as p:
+    with _playwright_event_loop_policy(), sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page(locale="tr-TR")
@@ -205,111 +226,111 @@ def scrape_public_active_listings():
     Her ilanı bir Python sözlüğü olarak döndürür.
     """
 
-    listings = []
-    seen_urls = set()
-
-    with sync_playwright() as p:
-
+    raw_listings = None
+    last_error = None
+    with _playwright_event_loop_policy(), sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-
         try:
-            page = browser.new_page(locale="tr-TR")
-            page.route("**/*", _block_document_requests)
-
-            response = page.goto(
-                URL,
-                wait_until="domcontentloaded",
-                timeout=60000
-            )
-
-            if response is None or response.status != 200:
+            for attempt in range(3):
+                page = browser.new_page(locale="tr-TR")
+                page.route("**/*", _block_document_requests)
+                try:
+                    response = page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+                    if response is None or response.status != 200:
+                        raise RuntimeError(f"Kariyer Kapısı HTTP yanıtı: {response.status if response else 'yanıt yok'}")
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                    except PlaywrightTimeoutError:
+                        # Portal arka plan istekleri açık tutabilir; ilanların görünmesini yine de bekle.
+                        pass
+                    page.wait_for_function("""() => {
+                        const body = document.body?.innerText?.toLocaleLowerCase('tr-TR') || '';
+                        const empty = body.includes('şu an aktif bir ilan bulunmamaktadır');
+                        const hasListing = Array.from(document.querySelectorAll('a[href]'))
+                          .some(anchor => /ilandetay/i.test(anchor.getAttribute('href') || ''));
+                        return empty || hasListing;
+                    }""", timeout=18000)
+                    body_text = page.locator("body").inner_text()
+                    if "şu an aktif bir ilan bulunmamaktadır" in body_text.casefold():
+                        return []
+                    raw_listings = page.locator("a[href]").evaluate_all("""
+                        anchors => anchors.filter(anchor => /ilandetay/i.test(anchor.getAttribute('href') || ''))
+                          .map(anchor => {
+                            const row = anchor.closest('tr') || anchor.parentElement?.parentElement;
+                            const columns = row ? Array.from(row.children).map(element => element.innerText.trim()) : [];
+                            return {
+                              url: anchor.href,
+                              institution_department: columns[1] || '',
+                              title: columns[2] || anchor.innerText.trim(),
+                              deadline: columns[3] || ''
+                            };
+                          })
+                    """)
+                    if not raw_listings:
+                        raise RuntimeError("Kariyer Kapısı sayfası yüklendi ancak ilan satırları okunamadı.")
+                    break
+                except Exception as error:
+                    last_error = error
+                    if attempt < 2:
+                        time.sleep(1.5 * (attempt + 1))
+                finally:
+                    page.close()
+            if raw_listings is None:
                 raise RuntimeError(
-                    "Kariyer Kapısı sayfasına erişilemedi."
-                )
-
-            body_text = page.locator("body").inner_text()
-            if "şu an aktif bir ilan bulunmamaktadır" in body_text.casefold():
-                return []
-
-            try:
-                page.wait_for_selector('a[href*="IlanDetay"]', timeout=20000)
-            except PlaywrightTimeoutError as error:
-                raise RuntimeError(
-                    "Kariyer Kapısı ilan bağlantısı yüklenmedi; sayfa boş veya erişim kontrollü olabilir."
-                ) from error
-
-            # Her ilan bağlantısının bulunduğu satırı oku
-            raw_listings = page.locator(
-                'a[href*="IlanDetay"]'
-            ).evaluate_all("""
-                anchors => anchors.map(anchor => {
-
-                    const row = anchor.parentElement.parentElement;
-
-                    const columns = Array.from(row.children).map(
-                        element => element.innerText.trim()
-                    );
-
-                    return {
-                        url: anchor.href,
-                        institution_department: columns[1] || "",
-                        title: columns[2] || "",
-                        deadline: columns[3] || ""
-                    };
-                })
-            """)
-
-            for item in raw_listings:
-
-                url = item["url"].strip()
-
-                # Aynı ilanı ikinci kez ekleme
-                if url in seen_urls:
-                    continue
-
-                seen_urls.add(url)
-
-                # Kurum ve birim bilgilerini ayır
-                institution_lines = [
-                    line.strip()
-                    for line in item["institution_department"].splitlines()
-                    if line.strip()
-                ]
-
-                institution = (
-                    institution_lines[0]
-                    if institution_lines else ""
-                )
-
-                department = (
-                    institution_lines[1]
-                    if len(institution_lines) > 1 else ""
-                )
-
-                title = item["title"].strip()
-
-                # Tarih ve haftanın gününü koru
-                deadline = " ".join(
-                    item["deadline"].split()
-                )
-
-                # Eksik kayıtları dahil etme
-                if not institution or not title:
-                    continue
-
-                listing = {
-                    "institution": institution,
-                    "department": department,
-                    "title": title,
-                    "end_date": deadline,
-                    "url": url,
-                    "source": "Kariyer Kapısı"
-                }
-
-                listings.append(listing)
-
+                    "Kariyer Kapısı ilan listesi 3 denemede yüklenemedi: "
+                    f"{last_error or 'bilinmeyen hata'}"
+                ) from last_error
         finally:
             browser.close()
+
+    listings = []
+    seen_urls = set()
+    for item in raw_listings:
+
+        url = item["url"].strip()
+
+        # Aynı ilanı ikinci kez ekleme
+        if url in seen_urls:
+            continue
+
+        seen_urls.add(url)
+
+        # Kurum ve birim bilgilerini ayır
+        institution_lines = [
+            line.strip()
+            for line in item["institution_department"].splitlines()
+            if line.strip()
+        ]
+
+        institution = (
+            institution_lines[0]
+            if institution_lines else ""
+        )
+
+        department = (
+            institution_lines[1]
+            if len(institution_lines) > 1 else ""
+        )
+
+        title = item["title"].strip()
+
+        # Tarih ve haftanın gününü koru
+        deadline = " ".join(
+            item["deadline"].split()
+        )
+
+        # Eksik kayıtları dahil etme
+        if not institution or not title:
+            continue
+
+        listings.append({
+            "institution": institution,
+            "department": department,
+            "title": title,
+            "end_date": deadline,
+            "url": url,
+            "source": "Kariyer Kapısı"
+        })
 
     return listings
 

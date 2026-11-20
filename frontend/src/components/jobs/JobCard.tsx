@@ -13,7 +13,7 @@ export function useOpenJob() {
   };
 }
 
-export function JobCard({ group }: { group: JobGroup }) {
+export function JobCard({ group, onDecision }: { group: JobGroup; onDecision?: (decision: "eligible" | "not_eligible") => void }) {
   const open = useOpenJob();
   const job = group.primary;
   const multiple = group.positions.length > 1;
@@ -61,7 +61,7 @@ export function JobCard({ group }: { group: JobGroup }) {
       {(group.category === "POTANSİYEL OLARAK UYGUN" || jobLevel) && (
         <div className="job-card-verify">
           <span>{jobLevel ? "Kararınız:" : "Resmî ilandan kontrol ettiyseniz:"}</span>
-          <VerifyButtons jobId={group.jobId} verification={jobLevel} compact />
+          <VerifyButtons jobId={group.jobId} verification={jobLevel} compact onDecision={onDecision} />
         </div>
       )}
     </article>

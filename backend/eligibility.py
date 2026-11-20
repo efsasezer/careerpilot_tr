@@ -284,7 +284,7 @@ def degree_level(degree: str) -> int | None:
         return None
     if "doktora" in text:
         return 5
-    if "yuksek lisans" in text or "master" in text:
+    if "yuksek lisans" in text or "lisansustu" in text or "master" in text:
         return 4
     if "on lisans" in text or "onlisans" in text or "meslek yuksek" in text:
         return 2
@@ -397,6 +397,10 @@ def _required_levels(text):
     levels = set()
     if re.search(r"on\s?lisans|meslek yuksekokul", text):
         levels.add(2)
+    if re.search(r"doktora|doktora dereces", text):
+        levels.add(5)
+    if re.search(r"yuksek lisans|lisansustu|lisans ustu", text):
+        levels.add(4)
     if re.search(r"(?<!on )(?<!on)(?<!yuksek )lisans(?! ?ustu)", text) or re.search(r"dort yillik|4 yillik|fakulte", text):
         levels.add(3)
     if re.search(r"ortaogretim|lise(?:\s|$|,)|lise ve dengi|lise veya dengi", text):
@@ -413,6 +417,15 @@ def _assess_education(candidate, evidence, codes, title="", position="", positio
     department_label = candidate.get("department") or "bölümünüz"
     text = re.sub(r"\s+", " ", normalize_text(" ".join(evidence)))
 
+    # Açıkça istenen lisansüstü düzey, genel 4001 gibi lisans kodlarının
+    # önüne geçer; lisans mezununu yüksek lisans şartlı ilana uygun sayma.
+    levels = _required_levels(text)
+    if levels and level is not None and level < min(levels):
+        return "not_met", (
+            f"İlan en az {LEVEL_NAMES[min(levels)]} mezuniyeti istiyor; "
+            f"profilinizdeki öğrenim düzeyi {LEVEL_NAMES.get(level, 'daha düşük')}."
+        )
+
     # 1. "Herhangi bir program" nitelik kodları
     for code, required in ANY_PROGRAM_CODES.items():
         if code in codes:
@@ -428,15 +441,7 @@ def _assess_education(candidate, evidence, codes, title="", position="", positio
             "unknown", "İlan metninde öğrenim/bölüm şartı bulunamadı; resmî ilandan doğrulanmalı."
         )
 
-    # 2. Öğrenim düzeyi alt sınırı
-    levels = _required_levels(text)
-    if levels and level is not None and level < min(levels):
-        return "not_met", (
-            f"İlan en az {LEVEL_NAMES[min(levels)]} mezuniyeti istiyor; "
-            f"profilinizdeki öğrenim düzeyi {LEVEL_NAMES.get(level, 'daha düşük')}."
-        )
-
-    # 3. Adayın bölümü ilanda açıkça geçiyor mu?
+    # 2. Adayın bölümü ilanda açıkça geçiyor mu?
     if names and any(pattern.search(text) for pattern in _department_patterns(names)):
         return "met", f"İlanda kabul edilen bölümler arasında {department_label} açıkça yer alıyor."
 
