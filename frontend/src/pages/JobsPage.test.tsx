@@ -39,7 +39,7 @@ vi.mock("../services/api/hooks", () => {
 });
 
 describe("JobsPage", () => {
-  it("moves a manually verified listing to the chosen tab and keeps both decisions visible", async () => {
+  it("shows a manually verified listing under its chosen category", async () => {
     jobs.push(position(5, "Elle Kurum", "POTANSİYEL OLARAK UYGUN", {
       category: "UYGUN",
       verification: { decision: "eligible", scope: "job", note: "", verified_at: null, stale: false, changes: [] },
@@ -51,7 +51,7 @@ describe("JobsPage", () => {
     expect(screen.getByText("Sistem: Doğrulanmalı · Siz: Uygun")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("tab", { name: /Doğrulanmalı/ }));
     expect(screen.queryByText("Elle Kurum pozisyonu")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /Doğruladıklarım \(1\)/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /^Uygun 2$/ }));
     expect(screen.getByText("Elle Kurum pozisyonu")).toBeInTheDocument();
     jobs.pop();
   });
