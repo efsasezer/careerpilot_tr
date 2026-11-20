@@ -17,7 +17,7 @@ export default function NotificationsPage() {
     <QueryState isLoading={query.isLoading} error={query.error}>
       <PageHeader
         title="Bildirimler"
-        description="Bugün ve yarın son günü olan ilanlar, açılan başvurular, açıklanacak sonuçlar, bugünkü görevleriniz ve güncellenen ilanlar."
+        description="Yaklaşan başvurular, son tarihler, sınav ve mülakatlar, bugünkü görevleriniz ve güncellenen ilanlar."
         action={
           <>
             <Link to="/settings" className="button"><BellRing size={16} /> Bildirim ayarları</Link>
@@ -52,7 +52,7 @@ export default function NotificationsPage() {
           })}
         </ul>
       ) : (
-        <EmptyState title="Henüz bildirim yok">Bildirimler siteyi açtığınızda hesaplanır: son başvuru günleri, bugünkü olaylar ve görevleriniz burada görünür.</EmptyState>
+        <EmptyState title="Henüz bildirim yok">Bildirimler siteyi açtığınızda hesaplanır: yaklaşan son tarihler, etkinlikler ve bugünkü görevleriniz burada görünür.</EmptyState>
       )}
     </QueryState>
   );

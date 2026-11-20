@@ -1,21 +1,22 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useOpenJob } from "../jobs/JobCard";
 import { CategoryBadge } from "../shared/Badges";
 import { EmptyState, QueryState } from "../shared/QueryState";
 import { useMatches } from "../../services/api/hooks";
 import { groupByJob, type JobGroup } from "../../utils/format";
+import type { CalendarFilter } from "./filters";
 
 const monthFormat = new Intl.DateTimeFormat("tr-TR", { month: "long", year: "numeric" });
 const dayFormat = new Intl.DateTimeFormat("tr-TR", { day: "numeric", weekday: "short" });
 
 /** Son başvuru günleri listesi (önceki "Başvuru takvimi" görünümü, değiştirilmeden). */
-export function DeadlineList() {
+export function DeadlineList({ includeAll, hiddenFilters }: { includeAll: boolean; hiddenFilters: CalendarFilter[] }) {
   const query = useMatches();
   const open = useOpenJob();
-  const [includeAll, setIncludeAll] = useState(false);
 
   const months = useMemo(() => {
     const groups = groupByJob((query.data?.jobs ?? []).filter((job) => !job.is_expired && job.tracking !== "hidden"))
+      .filter(() => !hiddenFilters.includes("application"))
       .filter((group) => group.primary.application_deadline && (includeAll || group.category !== "UYGUN DEĞİL"))
       .sort((a, b) => a.primary.application_deadline!.localeCompare(b.primary.application_deadline!));
     const byMonth = new Map<string, JobGroup[]>();
@@ -24,16 +25,12 @@ export function DeadlineList() {
       byMonth.set(key, [...(byMonth.get(key) ?? []), group]);
     }
     return [...byMonth.entries()];
-  }, [query.data, includeAll]);
+  }, [query.data, includeAll, hiddenFilters]);
 
   return (
     <QueryState isLoading={query.isLoading} error={query.error}>
       <div className="list-toolbar">
         <p className="muted">İlanlar son başvuru tarihine göre sıralanır; en yakın tarih en üstte.</p>
-        <label className="check-field">
-          <input type="checkbox" checked={includeAll} onChange={(event) => setIncludeAll(event.target.checked)} />
-          Uygun olmayanları da göster
-        </label>
       </div>
       {months.length ? months.map(([month, groups]) => (
         <section key={month} className="calendar-month">

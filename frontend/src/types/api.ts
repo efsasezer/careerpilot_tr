@@ -155,6 +155,7 @@ export interface JobEvent {
   url: string;
   source: "auto" | "user";
   user_edited: boolean;
+  verified: boolean;
   previous_date: string | null;
 }
 
@@ -206,6 +207,7 @@ export interface EventInput {
   end_date?: string | null;
   event_time?: string;
   title?: string;
+  evidence?: string;
   url?: string;
 }
 

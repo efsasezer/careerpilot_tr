@@ -91,8 +91,16 @@ def test_migration_preserves_existing_database_rows(tmp_path, monkeypatch):
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY, title TEXT)")
         connection.execute("CREATE TABLE candidate_profile (id INTEGER PRIMARY KEY)")
+        connection.execute("""CREATE TABLE job_events (
+            id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, kind TEXT NOT NULL,
+            event_date DATE NOT NULL, end_date DATE, event_time TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'auto', user_edited BOOLEAN NOT NULL DEFAULT 0,
+            deleted BOOLEAN NOT NULL DEFAULT 0, previous_date DATE, updated_at DATETIME NOT NULL
+        )""")
         connection.execute("INSERT INTO jobs (id, title) VALUES (1, 'Mevcut ilan')")
         connection.execute("INSERT INTO candidate_profile (id) VALUES (1)")
+        connection.execute("INSERT INTO job_events (id, job_id, kind, event_date, updated_at) VALUES (1, 1, 'exam', '2026-11-28', CURRENT_TIMESTAMP)")
 
     monkeypatch.setattr(migrate, "DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
     migrate.migrate()
@@ -101,6 +109,10 @@ def test_migration_preserves_existing_database_rows(tmp_path, monkeypatch):
         assert connection.execute("SELECT title FROM jobs WHERE id = 1").fetchone() == ("Mevcut ilan",)
         assert connection.execute("SELECT id FROM candidate_profile WHERE id = 1").fetchone() == (1,)
         assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert "verified" in {row[1] for row in connection.execute("PRAGMA table_info(job_events)")}
+        assert connection.execute("SELECT verified FROM job_events WHERE id = 1").fetchone() == (0,)
+        assert "ix_job_events_event_date" in {row[1] for row in connection.execute("PRAGMA index_list(job_events)")}
+        assert "ix_user_tasks_task_date" in {row[1] for row in connection.execute("PRAGMA index_list(user_tasks)")}
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_listings'"
         ).fetchone() == ("source_listings",)

@@ -42,7 +42,6 @@ export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
   const [status, setStatus] = useState(tracked ? "all" : "active");
   const [onlyPreferred, setOnlyPreferred] = useState(false);
   const [hideAcademic, setHideAcademic] = useState(false);
-  const [review, setReview] = useState<"pending" | "verified">("pending");
   const [order, setOrder] = useState<"relevance" | "deadline" | "newest">("deadline");
   const [limit, setLimit] = useState(PAGE_SIZE);
   const info = MODES[mode];
@@ -51,7 +50,7 @@ export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
   const sources = useMemo(() => [...new Set(all.map((job) => job.source_name))].sort(), [all]);
   const hasPreference = all.some((job) => job.out_of_preference);
 
-  const { groups, counts, verifiedFromReview } = useMemo(() => {
+  const { groups, counts } = useMemo(() => {
     const term = search.trim().toLocaleLowerCase("tr-TR");
     const visible = all.filter((job) => {
       if (!info.keep(job)) return false;
@@ -66,13 +65,9 @@ export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
     });
     const grouped = groupByJob(visible);
     const counts = Object.fromEntries(CATEGORIES.map((key) => [key, grouped.filter((group) => group.category === key).length])) as Record<MatchCategory, number>;
-    // Sistem "doğrulanmalı" demiş, kullanıcı karar vermiş ilanlar: geçtikleri sekmede görünür, buradan da süzülebilir.
-    const verifiedFromReview = grouped.filter((group) =>
-      group.positions.some((position) => position.verification && position.system_category === "POTANSİYEL OLARAK UYGUN"));
     let selected: JobGroup[] = category === "all" ? grouped : grouped.filter((group) => group.category === category);
-    if (category === "POTANSİYEL OLARAK UYGUN" && review === "verified") selected = verifiedFromReview;
-    return { groups: sortGroups(selected, tracked ? "deadline" : order), counts, verifiedFromReview };
-  }, [all, search, source, status, onlyPreferred, hideAcademic, order, category, tracked, review, info]);
+    return { groups: sortGroups(selected, tracked ? "deadline" : order), counts };
+  }, [all, search, source, status, onlyPreferred, hideAcademic, order, category, tracked, info]);
 
   function selectCategory(next: MatchCategory) {
     const updated = new URLSearchParams(params);
@@ -96,10 +91,7 @@ export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
       )}
 
       {category === "POTANSİYEL OLARAK UYGUN" && (
-        <div className="segmented" role="group" aria-label="Doğrulama durumu">
-          <button className={review === "pending" ? "selected" : ""} onClick={() => setReview("pending")}>Bakmadıklarım ({counts["POTANSİYEL OLARAK UYGUN"]})</button>
-          <button className={review === "verified" ? "selected" : ""} onClick={() => setReview("verified")}>Doğruladıklarım ({verifiedFromReview.length})</button>
-        </div>
+        <p className="review-hint">Karar verdiğiniz ilan bu listeden çıkar ve seçiminize göre “Uygun” ya da “Uygun değil” sekmesine taşınır.</p>
       )}
 
       <div className="filter-bar">
@@ -151,7 +143,10 @@ export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
       {groups.length ? (
         <>
           <p className="result-count">{groups.length} ilan</p>
-          <div className="job-list">{groups.slice(0, limit).map((group) => <JobCard key={group.jobId} group={group} />)}</div>
+          <div className="job-list">{groups.slice(0, limit).map((group) => (
+            <JobCard key={group.jobId} group={group}
+              onDecision={(decision) => selectCategory(decision === "eligible" ? "UYGUN" : "UYGUN DEĞİL")} />
+          ))}</div>
           {groups.length > limit && (
             <button className="button load-more" onClick={() => setLimit(limit + PAGE_SIZE)}>Daha fazla göster ({groups.length - limit})</button>
           )}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiRequest } from "./client";
+import { apiRequest, getApiUrl } from "./client";
 
 describe("apiRequest", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -11,7 +11,7 @@ describe("apiRequest", () => {
     await expect(apiRequest("/profile")).resolves.toEqual({ ok: true });
 
     const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe("/api/profile");
+    expect(url).toBe(`${getApiUrl()}/profile`);
     expect(init.credentials).toBe("include");
     expect(init.headers.has("Authorization")).toBe(false);
   });
