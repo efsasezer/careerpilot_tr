@@ -25,7 +25,7 @@ from .eligibility import (
 )
 from .events import refresh_all_events, sync_job_events
 from .kariyerkapisi import _label_values
-from .models import Job, JobDocument, JobDocumentScan, SourceListing, SourceSyncHistory
+from .models import Job, JobDocument, JobDocumentScan, SourceListing, SourceSyncHistory, UserVerification
 from .sources.registry import get_source_registry
 
 logger = logging.getLogger(__name__)
@@ -312,6 +312,9 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         "updated": 0, "unchanged": 0, "detail_failed": 0, "cancelled": 0, "error": None,
         "detail_errors": [], "touched_job_ids": [],
     }
+    rejected_job_ids = set(db.scalars(select(UserVerification.job_id).where(
+        UserVerification.position_id == "", UserVerification.decision == "not_eligible",
+    )).all())
     try:
         listings = source.fetch_listings()
         report["pages_checked"] = getattr(source, "pages_checked", 0)
@@ -371,7 +374,10 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
             listing.last_checked_at = checked_at
 
             # Taranmış ve OCR'la da okunamayan belge her taramada yeniden denenmez ("OCR'la yeniden dene" ile denenir).
-            needs_detail = created or listing.list_hash != list_hash or listing.status not in ("complete", "unreadable")
+            needs_detail = (
+                job.id not in rejected_job_ids
+                and (created or listing.list_hash != list_hash or listing.status not in ("complete", "unreadable"))
+            )
             if needs_detail:
                 try:
                     details = source.fetch_detail(detail_url)
@@ -422,8 +428,11 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
     except Exception as error:
         db.rollback()
         report["status"] = "error"
-        report["error"] = str(error)[:500]
-        logger.warning("Source %s failed: %s", source_key, error)
+        # Browser/network timeout exceptions can have an empty str(); preserve the type
+        # so the source card and sync history still explain what actually failed.
+        detail = str(error).strip() or f"{type(error).__name__} (hata iletisi boş)"
+        report["error"] = detail[:500]
+        logger.warning("Source %s failed: %s", source_key, detail)
 
     finally:
         close = getattr(source, "close", None)

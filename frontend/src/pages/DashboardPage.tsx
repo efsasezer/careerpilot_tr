@@ -3,9 +3,9 @@ import { Link } from "react-router-dom";
 import { JobCard } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState, QueryState } from "../components/shared/QueryState";
-import { useMatches, useNotifications, useProfile, useSyncStatus } from "../services/api/hooks";
+import { useCalendar, useMatches, useNotifications, useProfile, useSyncStatus } from "../services/api/hooks";
 import type { Profile } from "../types/api";
-import { formatTimestamp, groupByJob, sortGroups } from "../utils/format";
+import { addDays, formatDate, formatTimestamp, groupByJob, sortGroups, todayIso } from "../utils/format";
 
 /** Profilde eksik olup en çok ilanı "doğrulanmalı" durumunda bırakan bilgiler. */
 const PROFILE_HINTS: Record<string, { filled: (profile: Profile) => boolean; label: string }> = {
@@ -22,6 +22,8 @@ export default function DashboardPage() {
   const profile = useProfile();
   const notifications = useNotifications();
   const sync = useSyncStatus();
+  const today = todayIso();
+  const calendar = useCalendar(today, addDays(today, 14));
 
   return (
     <QueryState isLoading={matches.isLoading || profile.isLoading} error={matches.error ?? profile.error}>
@@ -47,6 +49,15 @@ export default function DashboardPage() {
         }
         const hints = [...hintCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
         const lastSync = sync.data?.finished_at;
+        const nextActions = [
+          ...(calendar.data?.events ?? []).map((event) => ({
+            date: event.date, time: event.time, title: `${event.label}: ${event.organization}`,
+            href: `?ilan=${event.job_id}`, priority: 0,
+          })),
+          ...(calendar.data?.tasks ?? []).filter((task) => !task.done).map((task) => ({
+            date: task.date, time: task.start_time, title: task.title, href: "/calendar", priority: task.priority === "high" ? 1 : 2,
+          })),
+        ].sort((a, b) => a.date.localeCompare(b.date) || a.priority - b.priority || a.time.localeCompare(b.time));
 
         return (
           <>
@@ -84,6 +95,23 @@ export default function DashboardPage() {
               </section>
 
               <aside className="side-stack">
+                <section className="panel">
+                  <h2>Bugün ve yakında</h2>
+                  {calendar.isLoading ? <p className="muted">Takvim yükleniyor…</p>
+                    : nextActions.length ? (
+                      <ul className="deadline-list">
+                        {nextActions.slice(0, 8).map((item, index) => (
+                          <li key={`${item.date}-${item.title}-${index}`}>
+                            <Link to={item.href}>
+                              <strong>{item.title}</strong>
+                              <span>{item.date === today ? "Bugün" : formatDate(item.date)}{item.time ? ` · ${item.time}` : ""}</span>
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : <p className="muted">Önümüzdeki 14 günde etkinlik veya tamamlanmamış görev yok.</p>}
+                  <Link to="/calendar" className="text-link">Takvimi aç <ArrowRight size={14} /></Link>
+                </section>
                 <section className="panel">
                   <h2>Son başvurusu yaklaşanlar</h2>
                   {closing.length ? (

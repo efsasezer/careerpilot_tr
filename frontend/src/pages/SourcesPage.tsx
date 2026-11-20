@@ -13,6 +13,9 @@ export default function SourcesPage() {
   const open = useOpenJob();
   const running = sync.data?.running ?? false;
   const report = sync.data?.report;
+  const hasOpenIssues = (query.data ?? []).some((source) =>
+    source.status === "Hata" || source.status === "Uyarı" || source.last_detail_failed > 0,
+  );
 
   return (
     <QueryState isLoading={query.isLoading} error={query.error}>
@@ -33,12 +36,12 @@ export default function SourcesPage() {
       )}
       {!running && sync.data?.error && <p className="notice notice-bad" role="alert">Tarama tamamlanamadı: {sync.data.error}</p>}
       {!running && report && (
-        <p className={`notice ${report.success ? "notice-ok" : "notice-warn"}`} role="status">
+        <p className={`notice ${report.success || !hasOpenIssues ? "notice-ok" : "notice-warn"}`} role="status">
           Son tarama {formatTimestamp(sync.data?.finished_at)} tarihinde bitti:{" "}
           {Object.values(report.results).reduce((sum, item) => sum + item.imported, 0)} yeni ilan,{" "}
           {Object.values(report.results).reduce((sum, item) => sum + item.updated, 0)} güncelleme
           {report.notifications ? `, ${report.notifications.created} yeni bildirim` : ""}.
-          {!report.success && " Bazı ilanların ayrıntısı okunamadı; aşağıdaki notlara bakın."}
+          {!report.success && hasOpenIssues && " Bazı ilanların ayrıntısı okunamadı; aşağıdaki notlara bakın."}
         </p>
       )}
 
