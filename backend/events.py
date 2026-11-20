@@ -130,12 +130,8 @@ def _application_evidence(text: str, target: date) -> tuple[str, str]:
         normalized = normalize_text(sentence)
         if not any(word in normalized for word in ("basvuru", "muracaat", "tercih")):
             continue
-        dates = _dates(normalized)
-        for index, (value, position) in enumerate(dates):
-            if value != target:
-                continue
-            next_date = dates[index + 1][1] if index + 1 < len(dates) else len(normalized)
-            return " ".join(sentence.split())[:500], _time(normalized[position:next_date])
+        if any(value == target for value, _ in _dates(normalized)):
+            return " ".join(sentence.split())[:500], _time(normalized)
     return "", ""
 
 
@@ -149,16 +145,12 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
     for kind, value in (("application_start", job.application_start), ("application_deadline", job.application_deadline)):
         if value:
             evidence, time_text = _application_evidence(text, value)
-            wanted.append({"kind": kind, "date": value, "end_date": None, "time": time_text,
+            wanted.append({"kind": kind, "date": value, "end_date": None, "time": time_text if kind == "application_deadline" else "",
                            "evidence": evidence or "Kaynağın ilan listesindeki başvuru tarihi.", "url": ""})
     if job.status != "İptal edildi":
         wanted.extend(extract_events(text, today=today))
 
     existing = list(db.scalars(select(JobEvent).where(JobEvent.job_id == job.id, JobEvent.source == "auto")).all())
-    user_events = list(db.scalars(select(JobEvent).where(
-        JobEvent.job_id == job.id, JobEvent.deleted.is_(False),
-        ((JobEvent.source == "user") | JobEvent.user_edited.is_(True)),
-    )).all())
     by_kind: dict[str, list[JobEvent]] = {}
     for event in existing:
         by_kind.setdefault(event.kind, []).append(event)
@@ -166,9 +158,6 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
     changed = created = 0
     kept: set[int] = set()
     for item in wanted:
-        # A user-added or verified date is authoritative for that event kind.
-        if any(event.kind == item["kind"] and event.user_edited for event in user_events):
-            continue
         candidates = by_kind.get(item["kind"], [])
         same = next((event for event in candidates if event.event_date == item["date"]), None)
         if same is not None:

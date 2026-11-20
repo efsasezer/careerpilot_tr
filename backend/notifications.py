@@ -10,7 +10,7 @@ import os
 import smtplib
 
 import requests
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import config
@@ -229,8 +229,8 @@ def deliver_pending(db: Session, settings: NotificationSettings | None = None) -
 
 
 def refresh_daily(db: Session, today=None) -> int:
-    """Site açıldığında hesaplanan günlük bildirimler ve yaklaşan olay hatırlatmaları.
-    Her ilan olayı/tarihi için yinelenen bildirim oluşturulmaz."""
+    """Site açıldığında hesaplanan günlük bildirimler (bugün/yarın son gün, bugünkü olay ve görevler,
+    güncellenen ilanlar). Aynı gün için ikinci kez oluşturulmaz."""
     from datetime import date as date_type, timedelta
 
     from .events import EVENT_LABELS, task_occurrences
@@ -238,8 +238,6 @@ def refresh_daily(db: Session, today=None) -> int:
 
     today = today or date_type.today()
     tomorrow = today + timedelta(days=1)
-    reminder_days = load_settings(db).deadline_reminder_days
-    reminder_end = today + timedelta(days=reminder_days)
     summaries = {item["job_id"]: item for item in job_summaries(build_matches(db, full=False, today=today))}
     existing = set(db.scalars(select(Notification.dedupe_key)).all())
     created = 0
@@ -260,7 +258,7 @@ def refresh_daily(db: Session, today=None) -> int:
         return summary["category"] != "UYGUN DEĞİL" or summary["tracking"] in ("saved", "applied", "awaiting")
 
     events = db.scalars(select(JobEvent).where(
-        JobEvent.deleted.is_(False), JobEvent.event_date >= today, JobEvent.event_date <= max(tomorrow, reminder_end),
+        JobEvent.deleted.is_(False), JobEvent.event_date.in_((today, tomorrow)),
     )).all()
     for event in events:
         summary = summaries.get(event.job_id)
@@ -270,8 +268,6 @@ def refresh_daily(db: Session, today=None) -> int:
         label = event.title or EVENT_LABELS.get(event.kind, "Olay")
         name = f"{summary['organization']} — {summary['title']}"
         if event.kind == "application_deadline":
-            if event.event_date > tomorrow:
-                continue  # Son başvuru hatırlatmaları tercih edilen gün sayısına göre üretilir.
             if applied:
                 continue
             when = "Bugün son gün" if event.event_date == today else "Yarın son gün"
@@ -279,11 +275,6 @@ def refresh_daily(db: Session, today=None) -> int:
         elif event.event_date == today:
             add("event", f"day:{event.id}:{event.event_date}", event.job_id, summary["category"], f"Bugün: {label} — {summary['organization']}",
                 name + (f" ({event.url})" if event.url else ""))
-        elif reminder_days and event.kind in ("application_start", "exam", "interview", "result", "documents", "appointment"):
-            days_left = (event.event_date - today).days
-            add("event_upcoming", f"event:{event.id}:{event.event_date}", event.job_id, summary["category"],
-                f"Yaklaşan etkinlik ({days_left} gün): {label} — {summary['organization']}",
-                name + (f" · {event.url}" if event.url else ""))
 
     for event in db.scalars(select(JobEvent).where(JobEvent.previous_date.is_not(None), JobEvent.deleted.is_(False))).all():
         summary = summaries.get(event.job_id)
@@ -298,12 +289,7 @@ def refresh_daily(db: Session, today=None) -> int:
                 f"İlan güncellendi, doğrulamanı gözden geçir: {summary['organization']}",
                 "Değişen: " + ", ".join(summary["stale_changes"]) + ". Kararınız korunuyor.")
 
-    todays_tasks = db.scalars(select(UserTask).where(
-        UserTask.task_date <= today,
-        ((UserTask.recurrence == "none") & (UserTask.task_date >= today))
-        | ((UserTask.recurrence != "none") & (or_(UserTask.until.is_(None), UserTask.until >= today))),
-    )).all()
-    todays = [item for item in task_occurrences(todays_tasks, today, today) if not item["done"]]
+    todays = [item for item in task_occurrences(db.scalars(select(UserTask)).all(), today, today) if not item["done"]]
     if todays:
         add("tasks", f"tasks:{today}", None, "", f"Bugünkü görevlerin ({len(todays)})", ", ".join(item["title"] for item in todays[:8]))
 

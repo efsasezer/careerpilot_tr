@@ -254,7 +254,7 @@ class JobEvent(Base):
     job_id: Mapped[int] = mapped_column(Integer, index=True)
     # application_start | application_deadline | exam | interview | result | documents | appointment
     kind: Mapped[str] = mapped_column(String(30))
-    event_date: Mapped[date] = mapped_column(Date, index=True)
+    event_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     event_time: Mapped[str] = mapped_column(String(5), default="")  # "HH:MM" ya da boş (tüm gün)
     title: Mapped[str] = mapped_column(String(300), default="")
@@ -262,7 +262,6 @@ class JobEvent(Base):
     url: Mapped[str] = mapped_column(String(1000), default="")
     source: Mapped[str] = mapped_column(String(10), default="auto")  # auto | user
     user_edited: Mapped[bool] = mapped_column(Boolean, default=False)
-    verified: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     previous_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
@@ -274,7 +273,7 @@ class UserTask(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(300))
     description: Mapped[str] = mapped_column(Text, default="")
-    task_date: Mapped[date] = mapped_column(Date, index=True)
+    task_date: Mapped[date] = mapped_column(Date)
     start_time: Mapped[str] = mapped_column(String(5), default="")
     end_time: Mapped[str] = mapped_column(String(5), default="")
     priority: Mapped[str] = mapped_column(String(10), default="normal")  # low | normal | high

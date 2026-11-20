@@ -56,9 +56,6 @@ def migrate():
     profile_columns = {
         row[1] for row in cursor.execute("PRAGMA table_info(candidate_profile)")
     } if "candidate_profile" in tables else set()
-    event_columns = {
-        row[1] for row in cursor.execute("PRAGMA table_info(job_events)")
-    } if "job_events" in tables else set()
     required_job_columns = {
         "source_name", "application_start", "announcement_date", "quota",
         "employment_type", "recruitment_method", "is_employment", "updated_at",
@@ -75,7 +72,6 @@ def migrate():
         not {"source_listings", "source_sync_history", "user_job_state", "user_verifications", "job_events", "user_tasks", "user_sessions"} <= tables
         or not required_job_columns <= job_columns
         or not required_profile_columns <= profile_columns
-        or ("job_events" in tables and "verified" not in event_columns)
     )
     if schema_change_needed:
         backup_path = db_path.with_name(
@@ -127,7 +123,6 @@ def migrate():
     add_column_if_missing(cursor, "candidate_profile", "foreign_language", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "preferences", "TEXT", default="'{}'")
     add_column_if_missing(cursor, "job_documents", "ocr_confidence", "REAL")
-    add_column_if_missing(cursor, "job_events", "verified", "BOOLEAN", default="0")
     add_column_if_missing(cursor, "candidate_profile", "department_aliases", "TEXT", default="''")
 
     conn.commit()
@@ -160,8 +155,6 @@ def migrate():
             )
             move.commit()
     with sqlite3.connect(str(db_path)) as verify:
-        verify.execute("CREATE INDEX IF NOT EXISTS ix_job_events_event_date ON job_events (event_date)")
-        verify.execute("CREATE INDEX IF NOT EXISTS ix_user_tasks_task_date ON user_tasks (task_date)")
         integrity = verify.execute("PRAGMA integrity_check").fetchone()[0]
         after_counts = {
             table: verify.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

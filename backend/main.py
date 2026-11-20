@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import auth, config
@@ -30,7 +30,7 @@ from .schemas import (
 )
 from .sources.registry import get_source_registry
 from .sync import (  # noqa: F401  (parse_turkish_date dışa açık)
-    _fresh_detail_url, _listing_for, cleanup_legacy_rows, download_official_pdf, parse_turkish_date, refetch_job, run_sync, sync_manager,
+    cleanup_legacy_rows, download_official_pdf, parse_turkish_date, refetch_job, run_sync, sync_manager,
 )
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,6 @@ def _event_payload(event: JobEvent) -> dict:
         "url": event.url,
         "source": event.source,
         "user_edited": event.user_edited,
-        "verified": event.verified,
         "previous_date": event.previous_date.isoformat() if event.previous_date else None,
     }
 
@@ -342,31 +341,6 @@ def job_pdf(job_id: int, db: Session = Depends(get_db)):
     except Exception as error:
         raise HTTPException(status_code=502, detail=f"Resmî PDF alınamadı: {str(error)[:200]}") from error
     return Response(content=body, media_type="application/pdf", headers={"Content-Disposition": "inline"})
-
-
-@app.get("/jobs/{job_id}/source-text")
-def job_source_text(job_id: int, db: Session = Depends(get_db)):
-    """Resmî HTML ilan metnini uygulama içinde okumak için yeniden alır."""
-    job = _public_job(db, job_id)
-    if len((job.description or "").strip()) >= 80:
-        return {"text": job.description, "source_url": job.source_url or None}
-    listing = _listing_for(db, job)
-    if listing is not None:
-        source = get_source_registry().get(listing.source_key)
-        fetch_detail = getattr(source, "fetch_detail", None)
-        if callable(fetch_detail):
-            try:
-                details = fetch_detail(_fresh_detail_url(source, listing))
-                text = str(details.get("source_text") or "").strip()
-                if len(text) >= 80:
-                    return {"text": text, "source_url": job.source_url or listing.official_url}
-            except Exception as error:
-                logger.info("Could not read official listing text for job %s: %s", job_id, error)
-            finally:
-                close = getattr(source, "close", None)
-                if callable(close):
-                    close()
-    raise HTTPException(status_code=502, detail="İlanın okunabilir metni bulunamadı. Varsa resmî PDF'i açın.")
 
 
 @app.post("/jobs/{job_id}/ocr")
@@ -502,9 +476,8 @@ def calendar(start: date, end: date, db: Session = Depends(get_db)):
         if item is None or item["tracking"] == "hidden":
             continue
         tracked = item["tracking"] in ("saved", "applied", "awaiting", "won", "lost")
-        # Başvuru açılış ve son günleri eşleşme durumundan bağımsız gösterilir.
-        # Böylece adayın profiline uymasa bile resmî ilan tarihini kaçırmaz.
-        if item["category"] == "UYGUN DEĞİL" and not tracked and event.kind not in ("application_start", "application_deadline"):
+        # Uygun olmayan ilanların olayları takvimi doldurmaz; takip edilenler her zaman görünür.
+        if item["category"] == "UYGUN DEĞİL" and not tracked:
             continue
         result.append({
             **_event_payload(event),
@@ -514,36 +487,20 @@ def calendar(start: date, end: date, db: Session = Depends(get_db)):
             "tracking": item["tracking"],
             "cancelled": item["application_status"] == "İptal Edildi",
         })
-    # Only load tasks that can occur inside this requested range.
-    tasks = db.scalars(select(UserTask).where(or_(
-        (UserTask.recurrence == "none") & (UserTask.task_date >= start) & (UserTask.task_date <= end),
-        (UserTask.recurrence != "none") & (UserTask.task_date <= end)
-        & (or_(UserTask.until.is_(None), UserTask.until >= start)),
-    ))).all()
+    tasks = db.scalars(select(UserTask)).all()
     return {"events": result, "tasks": task_occurrences(tasks, start, end)}
 
 
 @app.post("/jobs/{job_id}/events")
 def add_event(job_id: int, payload: EventUpdate, db: Session = Depends(get_db)):
-    job = _public_job(db, job_id)
-    event = db.scalar(select(JobEvent).where(
-        JobEvent.job_id == job_id, JobEvent.kind == payload.kind,
-        JobEvent.event_date == payload.event_date, JobEvent.source == "user", JobEvent.deleted.is_(False),
-    ).order_by(JobEvent.id.desc()).limit(1))
-    now = datetime.now()
-    if event is None:
-        event = JobEvent(job_id=job_id, kind=payload.kind, event_date=payload.event_date, source="user")
-        db.add(event)
-    event.end_date, event.event_time = payload.end_date, payload.event_time
-    event.title, event.url = payload.title, payload.url
-    event.evidence = payload.evidence or "Kullanıcı tarafından eklendi."
-    event.user_edited, event.deleted, event.updated_at = True, False, now
-    if payload.kind == "application_start":
-        job.application_start = payload.event_date
-    elif payload.kind == "application_deadline":
-        job.application_deadline = payload.event_date
+    _public_job(db, job_id)
+    event = JobEvent(
+        job_id=job_id, kind=payload.kind, event_date=payload.event_date, end_date=payload.end_date,
+        event_time=payload.event_time, title=payload.title, url=payload.url, source="user", user_edited=True,
+        evidence="Kullanıcı tarafından eklendi.", updated_at=datetime.now(),
+    )
+    db.add(event)
     db.commit()
-    invalidate_cache()
     return _event_payload(event)
 
 
@@ -552,23 +509,10 @@ def edit_event(event_id: int, payload: EventUpdate, db: Session = Depends(get_db
     event = db.get(JobEvent, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Olay bulunamadı")
-    old_kind = event.kind
-    job = _public_job(db, event.job_id)
     event.kind, event.event_date, event.end_date = payload.kind, payload.event_date, payload.end_date
     event.event_time, event.title, event.url = payload.event_time, payload.title, payload.url
-    if payload.evidence:
-        event.evidence = payload.evidence
     event.user_edited, event.updated_at = True, datetime.now()  # yeniden taramada ezilmez
-    if old_kind == "application_start":
-        job.application_start = payload.event_date if payload.kind == old_kind else None
-    if old_kind == "application_deadline":
-        job.application_deadline = payload.event_date if payload.kind == old_kind else None
-    if payload.kind == "application_start":
-        job.application_start = payload.event_date
-    elif payload.kind == "application_deadline":
-        job.application_deadline = payload.event_date
     db.commit()
-    invalidate_cache()
     return _event_payload(event)
 
 
@@ -577,37 +521,12 @@ def delete_event(event_id: int, db: Session = Depends(get_db)):
     event = db.get(JobEvent, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Olay bulunamadı")
-    job = _public_job(db, event.job_id)
-    kind = event.kind
     if event.source == "user":
         db.delete(event)
     else:
         event.deleted, event.user_edited, event.updated_at = True, True, datetime.now()  # tarama geri getirmesin
-    if kind in ("application_start", "application_deadline"):
-        latest = db.scalar(select(JobEvent.event_date).where(
-            JobEvent.job_id == job.id, JobEvent.kind == kind, JobEvent.id != event_id,
-            JobEvent.deleted.is_(False),
-        ).order_by(JobEvent.updated_at.desc()).limit(1))
-        if kind == "application_start":
-            job.application_start = latest
-        else:
-            job.application_deadline = latest
     db.commit()
-    invalidate_cache()
     return {"deleted": event_id}
-
-
-@app.post("/events/{event_id}/verify")
-def verify_event(event_id: int, db: Session = Depends(get_db)):
-    event = db.get(JobEvent, event_id)
-    if event is None or event.deleted:
-        raise HTTPException(status_code=404, detail="Olay bulunamadı")
-    event.verified = True
-    event.user_edited = True  # otomatik tarama kullanıcı tarafından incelenen tarihi değiştirmesin
-    event.updated_at = datetime.now()
-    db.commit()
-    invalidate_cache()
-    return _event_payload(event)
 
 
 def _task_payload(task: UserTask) -> dict:
@@ -841,9 +760,6 @@ def put_notification_settings(payload: NotificationSettings, db: Session = Depen
 @app.get("/sources")
 def list_sources(db: Session = Depends(get_db)):
     sources_data = []
-    rejected_job_ids = set(db.scalars(select(UserVerification.job_id).where(
-        UserVerification.position_id == "", UserVerification.decision == "not_eligible",
-    )).all())
     for info in SOURCES_STATUS.values():
         job_count = db.scalar(select(func.count(Job.id)).where(
             Job.source_name == info["name"], Job.archived_reason == "",
@@ -863,13 +779,10 @@ def list_sources(db: Session = Depends(get_db)):
             select(Job.id, Job.title, SourceListing.official_url, SourceListing.status, SourceListing.raw_payload)
             .join(SourceListing, SourceListing.job_id == Job.id)
             .where(Job.source_name == info["name"], SourceListing.status.in_(("detail_failed", "unreadable")), Job.archived_reason == "")
+            .limit(25)
         ).all()
         failed_items = []
-        seen_failed_jobs = set()
         for row in failed:
-            if row.id in rejected_job_ids or row.id in seen_failed_jobs:
-                continue
-            seen_failed_jobs.add(row.id)
             try:
                 reason = json.loads(row.raw_payload or "{}").get("error", "")
             except (ValueError, AttributeError):
@@ -879,18 +792,15 @@ def list_sources(db: Session = Depends(get_db)):
                 "scanned": row.status == "unreadable",
                 "reason": reason or "İlan ayrıntısı okunamadı.",
             })
-        unresolved_failed = len(failed_items)
-        failed_items = failed_items[:25]
-        source_status = (
-            "Henüz taranmadı" if not history
-            else "Aktif" if history.status == "ok" or (history.status == "partial" and not unresolved_failed)
-            else "Kısmi" if history.status == "partial"
-            else "Uyarı" if history.status == "warning"
-            else "Hata"
-        )
         sources_data.append({
             **info,
-            "status": source_status,
+            "status": (
+                "Henüz taranmadı" if not history
+                else "Aktif" if history.status == "ok"
+                else "Kısmi" if history.status == "partial"
+                else "Uyarı" if history.status == "warning"
+                else "Hata"
+            ),
             "job_count": job_count,
             "last_sync": history.checked_at.isoformat(timespec="seconds") if history else None,
             "last_success": last_success.isoformat(timespec="seconds") if last_success else None,
@@ -898,9 +808,9 @@ def list_sources(db: Session = Depends(get_db)):
             "last_created": history.imported if history else 0,
             "last_updated": history.updated if history else 0,
             "last_unchanged": history.unchanged if history else 0,
-            "last_detail_failed": unresolved_failed,
+            "last_detail_failed": history.detail_failed if history else 0,
             "pages_checked": history.pages_checked if history else 0,
-            "last_error": (history.error or None) if history and (history.status != "partial" or unresolved_failed) else None,
+            "last_error": (history.error or None) if history else None,
             "failed_items": failed_items,
         })
     return sources_data

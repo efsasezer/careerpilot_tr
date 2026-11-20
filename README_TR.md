@@ -37,27 +37,10 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m playwright install chromium   # Kariyer Kapısı ve İlan.gov.tr taraması için
 npm --prefix frontend ci
+cp .env.example .env    # şifreyi ve oturum anahtarını doldurun
 ```
 
 ## Çalıştırma
-
-İlk başlatmada script `.env` dosyasını oluşturur, sizden giriş şifresini gizli girişle
-ister ve oturum anahtarını üretip bu dosyaya kaydeder. Değerler sonraki başlatmalarda
-aynı kalır; `.env` Git'e eklenmez.
-Yerel başlatma scripti kaynakları 12 saatte bir otomatik tarar. Bunu değiştirmek için
-`.env` içindeki `CAREERPILOT_SYNC_INTERVAL_HOURS` değerini saat olarak ayarlayın; `0`
-otomatik taramayı kapatır. İlk tarama uygulama başladıktan kısa süre sonra çalışır.
-
-Windows PowerShell:
-
-```powershell
-./scripts/run_api.ps1
-```
-
-Sonraki çalıştırmalarda da aynı komutu kullanın. `.env` dosyasını silmeyin; silerseniz
-yeni oturum anahtarı oluşturulur ve eski tarayıcı oturumları kapanır.
-
-macOS / Linux:
 
 ```bash
 sh scripts/run_api.sh
@@ -101,11 +84,7 @@ Kullanıcı verisi ilan tablolarından ayrıdır ve tarama bu tablolara dokunmaz
 `render.yaml` iki servis tanımlar: API (`careerpilot-tr-api`) ve statik site
 (`careerpilot-tr-web`). Statik site `/api/*` isteklerini API'ye yönlendirir; böylece oturum
 çerezi aynı alan adında kalır. Render panelinde `careerpilot-tr-api` için
-`CAREERPILOT_PASSWORD` değerini bir kez girin; `CAREERPILOT_SESSION_SECRET` Blueprint
-tarafından bir kez üretilip Render'da saklanır. Normal deploylarda bu değerleri değiştirmeyin.
-Şifreyi veya servis ayarlarını değiştirmek mevcut oturumları kapatır; yeniden giriş gerekir.
-`autoDeploy: false` olduğu için branch'e push tek başına yayın yapmaz; Render panelinden
-`careerpilot-tr-api` ve `careerpilot-tr-web` servislerini deploy edin.
+`CAREERPILOT_PASSWORD` değerini girin; `CAREERPILOT_SESSION_SECRET` kendiliğinden üretilir.
 
 **Veri kaybı riski:** Blueprint'te kalıcı disk yoktur. Render'ın ücretsiz planında dosya
 sistemi her yeniden yayında ve servis yeniden başladığında sıfırlanır; yayında girilen
@@ -147,11 +126,8 @@ sayılmaz. Genel şartlarda (“herhangi bir lisans programı”) bölüm farkı
 ## Otomatik günlük tarama (GitHub Actions)
 
 `.github/workflows/gunluk-tarama.yml` günde iki kez tarama yapıp `careerpilot.db` dosyasını
-depoya işler. GitHub ve Render sunucuları yurt dışında olduğu için SBB, Kariyer Kapısı ve
-Yerel Yönetimler kaynakları bu ortamlarda engellenebilir. Bu üç kaynağın düzenli güncel
-kalması için uygulamayı Türkiye'den erişebilen bilgisayarda açık tutun; yerel başlangıç
-scripti 12 saatte bir tarar. Render'daki “Şimdi tara” düğmesi uzak sunucu erişim engelini
-aşamaz. Komut satırından yerel tam tarama: `.venv/bin/python -m backend.sync`
+depoya işler. GitHub'ın sunucuları yurt dışında olduğu için yalnızca İŞKUR, İlan.gov.tr ve
+ÖSYM güncellenir. Komut satırından tam tarama: `.venv/bin/python -m backend.sync`
 
 ## Testler
 

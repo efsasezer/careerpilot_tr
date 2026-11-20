@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend import auth, main, notifications
@@ -17,7 +17,7 @@ from backend.matching import build_matches, decompose_job_positions
 from backend.models import (
     CandidateProfile, DocumentPosition, Job, JobDocument, JobEvent, Notification, UserJobState, UserTask, UserVerification,
 )
-from backend.schemas import EventUpdate, TrackingUpdate, VerificationUpdate
+from backend.schemas import TrackingUpdate, VerificationUpdate
 
 UYGUN, POTANSIYEL, DEGIL = "UYGUN", "POTANSİYEL OLARAK UYGUN", "UYGUN DEĞİL"
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "karsiyaka_memur_alimi.json").read_text(encoding="utf-8"))
@@ -321,47 +321,6 @@ def test_job_events_keep_user_edits_and_record_date_changes():
         assert db.scalar(select(JobEvent).where(JobEvent.kind == "exam")).event_date == date(2026, 12, 23)  # ezilmedi
 
 
-def test_manual_application_dates_update_job_calendar_and_do_not_duplicate():
-    with _database() as db:
-        job = _job(application_start=None, application_deadline=None)
-        db.add(job)
-        db.commit()
-        main.update_tracking(job.id, TrackingUpdate(tracking="saved"), db=db)
-        db.add_all([
-            UserTask(title="Eski tek seferlik", task_date=date(2020, 1, 1), created_at=datetime.now()),
-            UserTask(title="Tekrarlayan", task_date=date(2026, 11, 1), recurrence="daily", created_at=datetime.now()),
-        ])
-        db.commit()
-        payload = EventUpdate(kind="application_start", event_date=date(2026, 11, 23), event_time="09:30",
-                              title="AFAD başvurusu başlıyor", evidence="Kurum duyurusu", url="https://afad.gov.tr")
-        first = main.add_event(job.id, payload, db=db)
-        duplicate = main.add_event(job.id, payload, db=db)
-        assert first["id"] == duplicate["id"]
-        assert db.get(Job, job.id).application_start == date(2026, 11, 23)
-        assert db.scalar(select(func.count(JobEvent.id))) == 1
-        calendar = main.calendar(date(2026, 11, 23), date(2026, 11, 23), db=db)
-        assert len(calendar["events"]) == 1 and calendar["events"][0]["time"] == "09:30"
-        assert [task["title"] for task in calendar["tasks"]] == ["Tekrarlayan"]
-        main.verify_event(first["id"], db=db)
-        db.expire_all()
-        assert db.get(JobEvent, first["id"]).verified is True
-        assert sync_job_events(db, db.get(Job, job.id), today=date(2026, 11, 16)) == {"created": 0, "changed": 0}
-
-        edited = EventUpdate(kind="application_start", event_date=date(2026, 11, 24), event_time="",
-                             title="Başvuru başlangıcı")
-        main.edit_event(first["id"], edited, db=db)
-        assert db.get(Job, job.id).application_start == date(2026, 11, 24)
-        assert not main.calendar(date(2026, 11, 23), date(2026, 11, 23), db=db)["events"]
-        main.delete_event(first["id"], db=db)
-        assert db.get(Job, job.id).application_start is None
-        assert db.scalar(select(func.count(JobEvent.id))) == 0
-
-
-def test_event_and_task_times_reject_invalid_hours():
-    with pytest.raises(ValueError):
-        EventUpdate(kind="exam", event_date=date(2026, 11, 28), event_time="25:00")
-
-
 def test_recurring_tasks_and_daily_notifications():
     today = date(2026, 12, 14)  # Pazartesi
     with _database() as db:
@@ -388,23 +347,6 @@ def test_recurring_tasks_and_daily_notifications():
         assert not any(n.kind == "deadline" for n in db.scalars(select(Notification)).all())
         notifications.refresh_daily(db, today=today)
         assert not any(n.kind == "deadline" for n in db.scalars(select(Notification)).all())
-
-
-def test_upcoming_exam_reminder_is_created_once():
-    today = date(2026, 11, 16)
-    with _database() as db:
-        db.add(CandidateProfile(id=1, degree="Lisans", department="Bilgisayar Mühendisliği", kpss_scores='{"P3": 87}'))
-        db.add(_job(application_start=today, application_deadline=today + timedelta(days=20)))
-        db.commit()
-        main.update_tracking(1, TrackingUpdate(tracking="saved"), db=db)
-        db.add(JobEvent(job_id=1, kind="exam", event_date=today + timedelta(days=2), title="Yazılı sınav",
-                        source="user", user_edited=True, updated_at=datetime.now()))
-        db.commit()
-
-        assert notifications.refresh_daily(db, today=today) == 1
-        item = db.scalar(select(Notification).where(Notification.kind == "event_upcoming"))
-        assert item is not None and "2 gün" in item.title and item.job_id == 1
-        assert notifications.refresh_daily(db, today=today) == 0
 
 
 # ---------------------------------------------------------------------------

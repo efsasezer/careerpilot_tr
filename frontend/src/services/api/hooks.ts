@@ -3,7 +3,7 @@ import { ApiError, apiRequest } from "./client";
 import { useAuth } from "./auth";
 import type {
   CalendarData, EventInput, JobDetail, MatchResponse, NotificationList, NotificationSettings,
-  Profile, ProfileUpdate, Source, SyncStatus, Task, TaskInput, Tracking, Verification,
+  Profile, ProfileUpdate, Source, SyncStatus, Task, TaskInput, Tracking,
 } from "../../types/api";
 
 interface QueryOptions {
@@ -33,10 +33,8 @@ function useApiMutation<TInput, TResult>(
       const { path, method, body } = request(input);
       return apiRequest<TResult>(path, { method, body: body === undefined ? undefined : JSON.stringify(body) });
     },
-    onSuccess: () => {
-      void Promise.all(invalidate.map((key) => queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith(key) })))
-        .catch(() => undefined);
-    },
+    onSuccess: () =>
+      Promise.all(invalidate.map((key) => queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith(key) }))),
   });
 }
 
@@ -67,49 +65,10 @@ export const useSetTracking = () =>
   useApiMutation<{ jobId: number; tracking: Tracking; notes?: string }, unknown>(
     ({ jobId, ...body }) => ({ path: `/jobs/${jobId}/tracking`, method: "PATCH", body }), JOB_KEYS,
   );
-interface VerificationInput { jobId: number; decision: "eligible" | "not_eligible"; position_id?: string; note?: string }
-
-export const useSetVerification = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ jobId, ...body }: VerificationInput) =>
-      apiRequest(`/jobs/${jobId}/verification`, { method: "PUT", body: JSON.stringify(body) }),
-    onMutate: async (input) => {
-      await queryClient.cancelQueries({ queryKey: ["matches"] });
-      const previous = queryClient.getQueryData<MatchResponse>(["matches"]);
-      if (previous) {
-        const category = input.decision === "eligible" ? "UYGUN" : "UYGUN DEĞİL";
-        const verification: Verification = {
-          decision: input.decision,
-          scope: input.position_id ? "position" : "job",
-          note: input.note ?? "",
-          verified_at: new Date().toISOString(),
-          stale: false,
-          changes: [],
-        };
-        queryClient.setQueryData<MatchResponse>(["matches"], {
-          ...previous,
-          jobs: previous.jobs.map((position) => {
-            if (position.parent_job_id !== input.jobId) return position;
-            if (input.position_id && position.id !== input.position_id) return position;
-            if (!input.position_id && position.verification?.scope === "position") return position;
-            return { ...position, category, verification };
-          }),
-        });
-      }
-      return { previous };
-    },
-    onError: (_error, _input, context) => {
-      if (context?.previous) queryClient.setQueryData(["matches"], context.previous);
-    },
-    onSettled: (_data, _error, input) => {
-      const keys = ["matches", `job:${input.jobId}`, "calendar", "notifications", "sources"];
-      void Promise.all(keys.map((key) => queryClient.invalidateQueries({
-        predicate: (query) => String(query.queryKey[0]).startsWith(key),
-      }))).catch(() => undefined);
-    },
-  });
-};
+export const useSetVerification = () =>
+  useApiMutation<{ jobId: number; decision: "eligible" | "not_eligible"; position_id?: string; note?: string }, unknown>(
+    ({ jobId, ...body }) => ({ path: `/jobs/${jobId}/verification`, method: "PUT", body }), JOB_KEYS,
+  );
 export const useClearVerification = () =>
   useApiMutation<{ jobId: number; position_id?: string }, unknown>(
     ({ jobId, position_id }) => ({ path: `/jobs/${jobId}/verification?position_id=${encodeURIComponent(position_id ?? "")}`, method: "DELETE" }), JOB_KEYS,
@@ -126,8 +85,6 @@ export const useEditEvent = () =>
   useApiMutation<{ id: number } & EventInput, unknown>(({ id, ...body }) => ({ path: `/events/${id}`, method: "PATCH", body }), JOB_KEYS);
 export const useDeleteEvent = () =>
   useApiMutation<number, unknown>((id) => ({ path: `/events/${id}`, method: "DELETE" }), JOB_KEYS);
-export const useVerifyEvent = () =>
-  useApiMutation<number, unknown>((id) => ({ path: `/events/${id}/verify`, method: "POST" }), JOB_KEYS);
 export const useSaveTask = () =>
   useApiMutation<TaskInput & { id?: number }, Task>(
     ({ id, ...body }) => ({ path: id ? `/tasks/${id}` : "/tasks", method: id ? "PATCH" : "POST", body }), ["tasks", "calendar", "notifications"],

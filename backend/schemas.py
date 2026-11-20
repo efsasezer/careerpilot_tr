@@ -139,26 +139,17 @@ class EventUpdate(BaseModel):
     kind: str = Field(pattern="^(application_start|application_deadline|exam|interview|result|documents|appointment)$")
     event_date: date
     end_date: date | None = None
-    event_time: str = Field(default="", pattern="^(|([01][0-9]|2[0-3]):[0-5][0-9])$")
+    event_time: str = Field(default="", pattern="^(|[0-2][0-9]:[0-5][0-9])$")
     title: str = Field(default="", max_length=300)
-    evidence: str = Field(default="", max_length=4000)
     url: str = Field(default="", max_length=1000)
-
-    @field_validator("end_date")
-    @classmethod
-    def _end_date_after_start(cls, value, info):
-        start = info.data.get("event_date")
-        if value is not None and start is not None and value < start:
-            raise ValueError("Bitiş tarihi başlangıç tarihinden önce olamaz.")
-        return value
 
 
 class TaskUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(default="", max_length=4000)
     task_date: date
-    start_time: str = Field(default="", pattern="^(|([01][0-9]|2[0-3]):[0-5][0-9])$")
-    end_time: str = Field(default="", pattern="^(|([01][0-9]|2[0-3]):[0-5][0-9])$")
+    start_time: str = Field(default="", pattern="^(|[0-2][0-9]:[0-5][0-9])$")
+    end_time: str = Field(default="", pattern="^(|[0-2][0-9]:[0-5][0-9])$")
     priority: str = Field(default="normal", pattern="^(low|normal|high)$")
     recurrence: str = Field(default="none", pattern="^(none|daily|weekly|weekdays|monthly)$")
     weekdays: list[int] = Field(default_factory=list)

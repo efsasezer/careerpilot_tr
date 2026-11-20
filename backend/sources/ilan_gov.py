@@ -9,11 +9,7 @@ from hashlib import sha256
 import re
 from typing import Any
 
-from ..kariyerkapisi import (
-    PlaywrightTimeoutError,
-    _playwright_event_loop_policy,
-    sync_playwright,
-)
+from ..kariyerkapisi import PlaywrightTimeoutError, sync_playwright
 from .base import BaseJobSource, content_hash
 
 _LISTING_PATH = re.compile(r"/ilan/(\d+)/")
@@ -71,10 +67,9 @@ class IlanGovSource(BaseJobSource):
 
     def _open(self):
         if self._page is None:
-            with _playwright_event_loop_policy():
-                self._playwright = sync_playwright().start()
-                self._browser = self._playwright.chromium.launch(headless=True)
-                self._page = self._browser.new_page(locale="tr-TR")
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch(headless=True)
+            self._page = self._browser.new_page(locale="tr-TR")
         return self._page
 
     def close(self) -> None:

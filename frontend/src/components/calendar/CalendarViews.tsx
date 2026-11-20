@@ -7,60 +7,44 @@ import { useCalendar, useCompleteTask, useDeleteEvent, useDeleteTask, useEditEve
 import type { CalendarData, CalendarEvent, TaskInput, TaskOccurrence } from "../../types/api";
 import { addDays, formatLongDate, startOfWeek, todayIso, weekdayIndex } from "../../utils/format";
 import { buildIcs } from "../../utils/ics";
-import { EVENT_FILTER_GROUP, type CalendarFilter } from "./filters";
 
 export type CalendarView = "month" | "week" | "day" | "agenda";
 const WEEKDAYS = ["Pzt", "Sal", "Çar", "Per", "Cum", "Cmt", "Paz"];
+const KIND_GROUPS: Array<[string, string, string[]]> = [
+  ["application", "Başvuru", ["application_start", "application_deadline"]],
+  ["exam", "Sınav / mülakat", ["exam", "interview"]],
+  ["result", "Sonuç", ["result"]],
+  ["documents", "Evrak / atama", ["documents", "appointment"]],
+  ["task", "Görevlerim", ["task"]],
+];
 const monthTitle = new Intl.DateTimeFormat("tr-TR", { month: "long", year: "numeric", timeZone: "UTC" });
 const shortDay = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", weekday: "short", timeZone: "UTC" });
 const asDate = (iso: string) => new Date(`${iso}T12:00:00Z`);
-const eventPriority = (kind: string) => kind === "application_start" ? 0 : kind === "application_deadline" ? 1 : 2;
 
 function range(view: CalendarView, cursor: string): [string, string] {
   if (view === "day") return [cursor, cursor];
-  if (view === "week") {
-    const start = startOfWeek(cursor);
-    return [start, addDays(start, 6)];
-  }
+  if (view === "week") return [startOfWeek(cursor), addDays(startOfWeek(cursor), 6)];
   if (view === "agenda") return [cursor, addDays(cursor, 60)];
   const first = `${cursor.slice(0, 7)}-01`;
   const start = startOfWeek(first);
   return [start, addDays(start, 41)];
 }
 
-function visibleEvent(event: CalendarEvent, includeAll: boolean, hiddenFilters: CalendarFilter[]) {
-  const filter = EVENT_FILTER_GROUP[event.kind];
-  return (includeAll || event.category !== "UYGUN DEĞİL") && (!filter || !hiddenFilters.includes(filter));
+function eventsOn(data: CalendarData | undefined, day: string, hidden: Set<string>) {
+  const events = (data?.events ?? []).filter((event) => event.date <= day && (event.end_date ?? event.date) >= day && !hidden.has(event.kind));
+  const tasks = hidden.has("task") ? [] : (data?.tasks ?? []).filter((task) => task.date === day);
+  return { events, tasks };
 }
 
-function indexCalendar(data: CalendarData | undefined, start: string, end: string, includeAll: boolean, hiddenFilters: CalendarFilter[]) {
-  const index = new Map<string, { events: CalendarEvent[]; tasks: TaskOccurrence[] }>();
-  for (let day = start; day <= end; day = addDays(day, 1)) index.set(day, { events: [], tasks: [] });
-  for (const event of data?.events ?? []) {
-    if (!visibleEvent(event, includeAll, hiddenFilters)) continue;
-    const first = event.date < start ? start : event.date;
-    const lastDate = event.end_date ?? event.date;
-    const last = lastDate > end ? end : lastDate;
-    for (let day = first; day <= last; day = addDays(day, 1)) index.get(day)?.events.push(event);
-  }
-  if (!hiddenFilters.includes("task")) {
-    for (const task of data?.tasks ?? []) index.get(task.date)?.tasks.push(task);
-  }
-  for (const value of index.values()) value.events.sort((a, b) =>
-    eventPriority(a.kind) - eventPriority(b.kind) || (a.time || "00:00").localeCompare(b.time || "00:00"),
-  );
-  return index;
-}
-
-export function CalendarViews({ view, includeAll, hiddenFilters }: { view: CalendarView; includeAll: boolean; hiddenFilters: CalendarFilter[] }) {
+export function CalendarViews({ view }: { view: CalendarView }) {
   const today = todayIso();
   const [cursor, setCursor] = useState(today);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [hiddenGroups, setHiddenGroups] = useState<string[]>([]);
   const [taskForm, setTaskForm] = useState<{ id?: number; date: string } | null>(null);
   const [start, end] = range(view, cursor);
   const query = useCalendar(start, end);
-  const dayIndex = useMemo(() => indexCalendar(query.data, start, end, includeAll, hiddenFilters), [query.data, start, end, includeAll, hiddenFilters]);
-  const itemsOn = (day: string) => dayIndex.get(day) ?? { events: [], tasks: [] };
+  const hidden = useMemo(() => new Set(KIND_GROUPS.filter(([key]) => hiddenGroups.includes(key)).flatMap(([, , kinds]) => kinds)), [hiddenGroups]);
   const step = view === "month" ? 0 : view === "week" ? 7 : view === "day" ? 1 : 30;
 
   function move(direction: 1 | -1) {
@@ -69,18 +53,11 @@ export function CalendarViews({ view, includeAll, hiddenFilters }: { view: Calen
       date.setUTCMonth(date.getUTCMonth() + direction);
       setCursor(`${date.toISOString().slice(0, 7)}-01`);
     } else setCursor(addDays(cursor, direction * step));
-    // Keep the selected-day details in sync with the period shown above.
-    setSelectedDay(null);
   }
 
   async function exportIcs() {
     const data = await apiRequest<CalendarData>(`/calendar?start=${addDays(today, -30)}&end=${addDays(today, 365)}`);
-    const exportData = {
-      ...data,
-      events: data.events.filter((event) => visibleEvent(event, includeAll, hiddenFilters)),
-      tasks: hiddenFilters.includes("task") ? [] : data.tasks,
-    };
-    const url = URL.createObjectURL(new Blob([buildIcs(exportData)], { type: "text/calendar;charset=utf-8" }));
+    const url = URL.createObjectURL(new Blob([buildIcs(data)], { type: "text/calendar;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = "careerpilot-takvim.ics";
@@ -109,6 +86,16 @@ export function CalendarViews({ view, includeAll, hiddenFilters }: { view: Calen
           <button className="button button-small" onClick={exportIcs}><Download size={15} /> .ics dışa aktar</button>
         </div>
       </div>
+      <div className="calendar-filters" role="group" aria-label="Olay türü">
+        {KIND_GROUPS.map(([key, label]) => (
+          <label key={key} className={`legend legend-${key}`}>
+            <input type="checkbox" checked={!hiddenGroups.includes(key)}
+              onChange={(event) => setHiddenGroups(event.target.checked ? hiddenGroups.filter((item) => item !== key) : [...hiddenGroups, key])} />
+            {label}
+          </label>
+        ))}
+      </div>
+
       {taskForm && <TaskForm initialDate={taskForm.date} taskId={taskForm.id} onClose={() => setTaskForm(null)} />}
 
       <QueryState isLoading={query.isLoading} error={query.error}>
@@ -116,23 +103,15 @@ export function CalendarViews({ view, includeAll, hiddenFilters }: { view: Calen
           <div className="month-grid" role="grid" aria-label={title}>
             {WEEKDAYS.map((name) => <div key={name} className="month-head">{name}</div>)}
             {days.map((day) => {
-              const { events, tasks } = itemsOn(day);
-              const applicationStarts = events.filter((event) => event.kind === "application_start").length;
+              const { events, tasks } = eventsOn(query.data, day, hidden);
               const items = [...events.map((event) => ({ key: `e${event.id}`, kind: event.kind, text: `${event.time ? `${event.time} ` : ""}${event.label} · ${event.organization}`, span: Boolean(event.end_date) && event.date !== day, done: false })),
                 ...tasks.map((task) => ({ key: `t${task.task_id}`, kind: "task", text: `${task.start_time ? `${task.start_time} ` : ""}${task.title}`, span: false, done: task.done }))];
               return (
-                <button key={day} role="gridcell" aria-label={`${formatLongDate(day)}: ${applicationStarts} başvuru açılışı, ${events.length} ilan olayı, ${tasks.length} görev. Günü aç.`}
-                  onClick={() => {
-                    setSelectedDay(day);
-                    setCursor(day);
-                    // Clicking a leading/trailing date should open its own month,
-                    // so the heading and selected-day details never disagree.
-                  }}
+                <button key={day} role="gridcell" onClick={() => setSelectedDay(day)}
                   className={`month-cell ${day.slice(0, 7) !== cursor.slice(0, 7) ? "month-cell-out" : ""} ${day === today ? "month-cell-today" : ""} ${day === selectedDay ? "month-cell-selected" : ""}`}>
                   <span className="month-day">{Number(day.slice(8))}</span>
-                  {applicationStarts > 0 && <span className="pill pill-month-start">{applicationStarts} başvuru açılıyor</span>}
-                  {items.slice(0, 2).map((item) => <span key={item.key} className={`pill pill-${item.kind} ${item.span ? "pill-span" : ""} ${item.done ? "pill-done" : ""}`}>{item.text}</span>)}
-                  {items.length > 2 && <span className="pill-more">Tüm {items.length} olayı aç ›</span>}
+                  {items.slice(0, 3).map((item) => <span key={item.key} className={`pill pill-${item.kind} ${item.span ? "pill-span" : ""} ${item.done ? "pill-done" : ""}`}>{item.text}</span>)}
+                  {items.length > 3 && <span className="pill-more">+{items.length - 3} daha</span>}
                 </button>
               );
             })}
@@ -142,10 +121,10 @@ export function CalendarViews({ view, includeAll, hiddenFilters }: { view: Calen
         {view === "week" && (
           <div className="week-grid">
             {days.map((day) => {
-              const { events, tasks } = itemsOn(day);
+              const { events, tasks } = eventsOn(query.data, day, hidden);
               return (
                 <section key={day} className={`week-day ${day === today ? "week-day-today" : ""}`}>
-                  <button className="week-day-head" onClick={() => { setCursor(day); setSelectedDay(day); }}>{WEEKDAYS[weekdayIndex(day)]} {Number(day.slice(8))}</button>
+                  <button className="week-day-head" onClick={() => setSelectedDay(day)}>{WEEKDAYS[weekdayIndex(day)]} {Number(day.slice(8))}</button>
                   <DayItems day={day} events={events} tasks={tasks} compact onEditTask={(id) => setTaskForm({ id, date: day })} />
                 </section>
               );
@@ -153,12 +132,12 @@ export function CalendarViews({ view, includeAll, hiddenFilters }: { view: Calen
           </div>
         )}
 
-        {view === "agenda" && <Agenda dayIndex={dayIndex} start={start} end={end} onEditTask={(id, day) => setTaskForm({ id, date: day })} />}
+        {view === "agenda" && <Agenda data={query.data} start={start} end={end} hidden={hidden} onEditTask={(id, day) => setTaskForm({ id, date: day })} />}
 
         {detailDay && view !== "agenda" && (
           <section className="panel day-panel">
             <h2>{formatLongDate(detailDay)}</h2>
-            <DayItems day={detailDay} {...itemsOn(detailDay)} onEditTask={(id) => setTaskForm({ id, date: detailDay })} />
+            <DayItems day={detailDay} {...eventsOn(query.data, detailDay, hidden)} onEditTask={(id) => setTaskForm({ id, date: detailDay })} />
           </section>
         )}
       </QueryState>
@@ -166,17 +145,17 @@ export function CalendarViews({ view, includeAll, hiddenFilters }: { view: Calen
   );
 }
 
-function Agenda({ dayIndex, start, end, onEditTask }: { dayIndex: Map<string, { events: CalendarEvent[]; tasks: TaskOccurrence[] }>; start: string; end: string; onEditTask: (id: number, day: string) => void }) {
+function Agenda({ data, start, end, hidden, onEditTask }: { data?: CalendarData; start: string; end: string; hidden: Set<string>; onEditTask: (id: number, day: string) => void }) {
   const days: string[] = [];
   for (let day = start; day <= end; day = addDays(day, 1)) {
-    const { events, tasks } = dayIndex.get(day) ?? { events: [], tasks: [] };
+    const { events, tasks } = eventsOn(data, day, hidden);
     if (events.some((event) => event.date === day) || tasks.length) days.push(day);
   }
   if (!days.length) return <p className="empty-state"><strong>Önümüzdeki 60 günde olay ya da görev yok</strong></p>;
   return (
     <div className="agenda">
       {days.map((day) => {
-        const { events, tasks } = dayIndex.get(day) ?? { events: [], tasks: [] };
+        const { events, tasks } = eventsOn(data, day, hidden);
         return (
           <section key={day} className="agenda-day">
             <h3>{formatLongDate(day)}</h3>
@@ -199,9 +178,7 @@ function DayItems({ day, events, tasks, compact = false, onEditTask }: {
   const saveTask = useSaveTask();
   const allTasks = useTasks();
   const [editing, setEditing] = useState<number | null>(null);
-  const timed = [...events].sort((a, b) =>
-    eventPriority(a.kind) - eventPriority(b.kind) || (a.time || "00:00").localeCompare(b.time || "00:00"),
-  );
+  const timed = [...events].sort((a, b) => (a.time || "00:00").localeCompare(b.time || "00:00"));
   if (!events.length && !tasks.length) return <p className="muted day-empty">{compact ? "—" : "Bu gün için olay ya da görev yok."}</p>;
 
   function moveToTomorrow(taskId: number) {

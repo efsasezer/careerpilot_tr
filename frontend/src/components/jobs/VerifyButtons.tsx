@@ -4,24 +4,20 @@ import type { Verification } from "../../types/api";
 
 /** "Doğruladım: Uygun / Uygun değil" ve geri alma. Karar sunucuda sistem kararından ayrı saklanır. */
 export function VerifyButtons({
-  jobId, positionId = "", verification, note, compact = false, onDecision,
+  jobId, positionId = "", verification, note, compact = false,
 }: {
   jobId: number;
   positionId?: string;
   verification: Verification | null;
   note?: string;
   compact?: boolean;
-  onDecision?: (decision: "eligible" | "not_eligible") => void;
 }) {
   const set = useSetVerification();
   const clear = useClearVerification();
   const busy = set.isPending || clear.isPending;
   const current = verification?.decision ?? null;
   const decide = (decision: "eligible" | "not_eligible") =>
-    set.mutate(
-      { jobId, decision, position_id: positionId, note: note ?? verification?.note ?? "" },
-      { onSuccess: () => onDecision?.(decision) },
-    );
+    set.mutate({ jobId, decision, position_id: positionId, note: note ?? verification?.note ?? "" });
 
   return (
     <div className={`verify ${compact ? "verify-compact" : ""}`} onClick={(event) => event.stopPropagation()}>
