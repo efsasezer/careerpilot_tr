@@ -131,9 +131,47 @@ def generate_notifications(db: Session, matches: dict | None = None, settings: N
                 f"{summary['title']} — {_format_deadline(summary['application_deadline'])}.",
             )
 
+    _result_notifications(db, {item["job_id"]: item for item in job_summaries(matches)}, add)
+    _announcement_notifications(db, existing, created)
     if created:
         db.commit()
     return created
+
+
+def _result_notifications(db: Session, summaries: dict, add) -> None:
+    """Kaydedilen/başvurulan ilanların her yeni sonuç aşaması için bir kez bildirim üretir."""
+    from .models import ResultAnnouncement
+    from .results import KIND_LABELS
+
+    for row in db.scalars(select(ResultAnnouncement).where(ResultAnnouncement.user_decision != "rejected")).all():
+        summary = summaries.get(row.job_id)
+        if summary is None or summary["tracking"] not in ("saved", "applied", "awaiting"):
+            continue
+        label = KIND_LABELS.get(row.kind, KIND_LABELS["result"])
+        when = f" ({row.published_date:%d.%m.%Y})" if row.published_date else ""
+        if row.match_status == "matched" or row.user_decision == "confirmed":
+            title = f"Sonuç açıklandı — {label}: {summary['organization']}"
+        else:
+            title = f"Olası sonuç duyurusu (eşleşme doğrulanmalı): {summary['organization']}"
+        add("result", f"result:{row.id}", summary, title, f"{row.title}{when} · {row.url}")
+
+
+def _announcement_notifications(db: Session, existing: set, created: list) -> None:
+    from .models import Announcement
+
+    for row in db.scalars(select(Announcement).where(Announcement.topic == "ylsy")).all():
+        key = f"announcement:{row.id}"
+        # İlk kurulumda aktarılan eski duyurular bildirim üretmez; yalnızca sonradan görülenler.
+        if key in existing or '"backfill": true' in (row.facts or ""):
+            continue
+        existing.add(key)
+        when = f" ({row.published_date:%d.%m.%Y})" if row.published_date else ""
+        record = Notification(
+            kind="announcement", dedupe_key=key, job_id=None, category="",
+            title=f"Yeni YLSY / 1416 duyurusu{when}"[:400], body=f"{row.title} · {row.url}", created_at=datetime.now(),
+        )
+        db.add(record)
+        created.append(record)
 
 
 def _digest(notifications: list[Notification]) -> tuple[str, str]:
@@ -142,11 +180,18 @@ def _digest(notifications: list[Notification]) -> tuple[str, str]:
     parts = []
     if matches:
         parts.append(f"{len(matches)} yeni uygun ilan")
+    results = [item for item in notifications if item.kind == "result"]
+    announcements = [item for item in notifications if item.kind == "announcement"]
     if deadlines:
         parts.append(f"{len(deadlines)} yaklaşan son başvuru")
-    subject = "CareerPilot TR: " + " ve ".join(parts)
+    if results:
+        parts.append(f"{len(results)} sonuç duyurusu")
+    if announcements:
+        parts.append(f"{len(announcements)} YLSY duyurusu")
+    subject = "CareerPilot TR: " + (", ".join(parts) or "yeni bildirim")
     lines = []
-    for heading, group in (("Yeni eşleşen ilanlar", matches), ("Son başvurusu yaklaşanlar", deadlines)):
+    for heading, group in (("Sonuç duyuruları", results), ("YLSY / 1416 duyuruları", announcements),
+                           ("Yeni eşleşen ilanlar", matches), ("Son başvurusu yaklaşanlar", deadlines)):
         if not group:
             continue
         lines.append(heading + ":")
@@ -297,6 +342,30 @@ def refresh_daily(db: Session, today=None) -> int:
             add("verification_stale", f"stale:{summary['job_id']}:{'|'.join(summary['stale_changes'])[:80]}", summary["job_id"], summary["category"],
                 f"İlan güncellendi, doğrulamanı gözden geçir: {summary['organization']}",
                 "Değişen: " + ", ".join(summary["stale_changes"]) + ". Kararınız korunuyor.")
+
+    # YLSY başvuru tarihleri (kılavuzda yazıyorsa) ve hesaptan aktarılan sınavlar için hatırlatma.
+    from .models import AccountApplication, Announcement
+
+    for row in db.scalars(select(Announcement).where(Announcement.topic == "ylsy", Announcement.category == "guide")).all():
+        try:
+            window = json.loads(row.facts or "{}").get("application") or {}
+        except ValueError:
+            window = {}
+        for field, label in (("start", "YLSY başvurusu başlıyor"), ("end", "YLSY son başvuru günü")):
+            if not window.get(field):
+                continue
+            day = date_type.fromisoformat(window[field])
+            if today <= day <= max(tomorrow, reminder_end):
+                left = (day - today).days
+                when = "bugün" if left == 0 else "yarın" if left == 1 else f"{left} gün sonra"
+                add("ylsy_date", f"ylsy:{row.id}:{field}:{day}:{when}", None, "", f"{label}: {when} ({day:%d.%m.%Y})", f"{row.title} · {row.url}")
+    for row in db.scalars(select(AccountApplication).where(
+        AccountApplication.section == "exams", AccountApplication.exam_date >= today, AccountApplication.exam_date <= max(tomorrow, reminder_end),
+    )).all():
+        left = (row.exam_date - today).days
+        when = "bugün" if left == 0 else "yarın" if left == 1 else f"{left} gün sonra"
+        add("event_upcoming", f"account-exam:{row.id}:{row.exam_date}:{when}", row.job_id, "", f"Sınavın {when}: {row.organization or row.title}",
+            f"{row.title} — {row.exam_date:%d.%m.%Y} {row.exam_time} {row.exam_place}".strip())
 
     todays_tasks = db.scalars(select(UserTask).where(
         UserTask.task_date <= today,

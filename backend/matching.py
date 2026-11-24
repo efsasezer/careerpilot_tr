@@ -6,6 +6,7 @@ from datetime import date
 from hashlib import sha256
 import json
 import re
+import threading
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -316,6 +317,7 @@ def _preference_status(profile: dict, preferred: list[str], *texts: str) -> tupl
 
 
 _CACHE: dict[tuple, dict] = {}
+_BUILD_LOCK = threading.RLock()
 
 
 def invalidate_cache() -> None:
@@ -357,6 +359,15 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
         cache_key = (str(db.get_bind().url), full, today, _data_version(db, stored_profile))
         if cache_key in _CACHE:
             return _CACHE[cache_key]
+        # Aynı anda gelen istekler hesabı bir kez yapar; diğerleri sonucu önbellekten alır.
+        with _BUILD_LOCK:
+            if cache_key in _CACHE:
+                return _CACHE[cache_key]
+            return _build_matches(db, full=full, today=today, cache_key=cache_key, stored_profile=stored_profile)
+    return _build_matches(db, full=full, today=today, cache_key=None, stored_profile=stored_profile, only_job_ids=only_job_ids)
+
+
+def _build_matches(db: Session, *, full: bool, today: date, cache_key, stored_profile, only_job_ids: list[int] | None = None) -> dict:
     profile = build_candidate_profile(stored_profile)
     preferred = _preferred_cities(profile)
     preferred += [

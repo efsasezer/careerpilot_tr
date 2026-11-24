@@ -191,6 +191,14 @@ export default function ProfilePage() {
 
             <Section title="Dil ve belgeler">
               <Field label="YDS / e-YDS puanı" help="Yoksa boş bırakın (belirtilmedi)."><input type="number" min={0} max={100} step="0.01" value={draft.yds_score ?? ""} onChange={(event) => set("yds_score", numberOrNull(event.target.value))} /></Field>
+              <Field label="ALES puanı" help="YLSY / 1416 bursları ve akademik ilanlar için."><input type="number" min={0} max={100} step="0.01" value={draft.ales_score ?? ""} onChange={(event) => set("ales_score", numberOrNull(event.target.value))} /></Field>
+              <Field label="ALES puan türü" help="Sonuç belgendeki tür. Seçilmezse uygunluk kararı verilmez.">
+                <select value={draft.ales_score_type} onChange={(event) => set("ales_score_type", event.target.value as typeof draft.ales_score_type)}>
+                  <option value="">Henüz doğrulamadım</option><option value="sayisal">Sayısal (SAY)</option><option value="sozel">Sözel (SÖZ)</option><option value="esit_agirlik">Eşit Ağırlık (EA)</option>
+                </select>
+              </Field>
+              <Field label="ALES sınav yılı"><input type="number" min={2000} max={2100} value={draft.ales_year ?? ""} onChange={(event) => set("ales_year", numberOrNull(event.target.value))} /></Field>
+              <Field label="Lisans not ortalaması (4'lük)"><input type="number" min={0} max={4} step="0.01" value={draft.gpa ?? ""} onChange={(event) => set("gpa", numberOrNull(event.target.value))} /></Field>
               <Field label="Yabancı dil"><input value={draft.foreign_language} onChange={(event) => set("foreign_language", event.target.value)} placeholder="Örn. İngilizce (B2)" /></Field>
               <Field label="Sertifikalar" wide help="Virgülle ayırın."><textarea rows={2} value={draft.certificates} onChange={(event) => set("certificates", event.target.value)} /></Field>
               <Field label="Belgeleyebildiğim programlama dilleri" wide help="Bilişim personeli ilanlarında aranır; ilgili değilse boş bırakın.">

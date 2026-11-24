@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { JobCard } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState, QueryState } from "../components/shared/QueryState";
-import { useCalendar, useMatches, useNotifications, useProfile, useSyncStatus } from "../services/api/hooks";
+import { useCalendar, useMatches, useNotifications, useProfile, useResults, useSyncStatus } from "../services/api/hooks";
 import type { Profile } from "../types/api";
 import { addDays, formatDate, formatTimestamp, groupByJob, sortGroups, todayIso } from "../utils/format";
 
@@ -17,6 +17,11 @@ const PROFILE_HINTS: Record<string, { filled: (profile: Profile) => boolean; lab
   Vardiya: { filled: (p) => p.accepts_shifts !== null, label: "Vardiyalı çalışma tercihinizi belirtin" },
 };
 
+const RESULT_SHORT: Record<string, string> = {
+  needs_review: "Eşleşme doğrulanmalı", not_found: "Kontrol edildi, sonuç yok", not_due: "Henüz yayımlanmadı",
+  error: "Kaynak kontrol edilemedi", no_source: "Resmî adres bilinmiyor", pending: "Kontrol sırası bekliyor", waiting: "Başvuru sürüyor",
+};
+
 export default function DashboardPage() {
   const matches = useMatches();
   const profile = useProfile();
@@ -24,6 +29,7 @@ export default function DashboardPage() {
   const sync = useSyncStatus();
   const today = todayIso();
   const calendar = useCalendar(today, addDays(today, 14));
+  const results = useResults();
 
   return (
     <QueryState isLoading={matches.isLoading || profile.isLoading} error={matches.error ?? profile.error}>
@@ -52,7 +58,7 @@ export default function DashboardPage() {
         const nextActions = [
           ...(calendar.data?.events ?? []).map((event) => ({
             date: event.date, time: event.time, title: `${event.label}: ${event.organization}`,
-            href: `?ilan=${event.job_id}`, priority: 0,
+            href: event.job_id !== null ? `?ilan=${event.job_id}` : event.source === "ylsy" ? "/ylsy" : "/calendar", priority: 0,
           })),
           ...(calendar.data?.tasks ?? []).filter((task) => !task.done).map((task) => ({
             date: task.date, time: task.start_time, title: task.title, href: "/calendar", priority: task.priority === "high" ? 1 : 2,
@@ -111,6 +117,33 @@ export default function DashboardPage() {
                       </ul>
                     ) : <p className="muted">Önümüzdeki 14 günde etkinlik veya tamamlanmamış görev yok.</p>}
                   <Link to="/calendar" className="text-link">Takvimi aç <ArrowRight size={14} /></Link>
+                </section>
+                <section className="panel">
+                  <h2>Sonuç duyuruları</h2>
+                  {results.isLoading ? <p className="muted">Yükleniyor…</p> : (
+                    <>
+                      {results.data?.announcements.length ? (
+                        <ul className="deadline-list">
+                          {results.data.announcements.slice(0, 5).map((item) => (
+                            <li key={item.id}>
+                              <Link to={`?ilan=${item.job_id}`}>
+                                <strong>{item.organization}</strong>
+                                <span>{item.kind_label}{item.published_date ? ` · ${formatDate(item.published_date)}` : ""}{item.match_status === "matched" ? "" : " · eşleşme doğrulanmalı"}</span>
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : <p className="muted">Henüz bulunan sonuç duyurusu yok.</p>}
+                      {(results.data?.tracked ?? []).filter((item) => item.status !== "found").slice(0, 5).map((item) => (
+                        <p className={`result-line result-line-${item.status}`} key={item.job_id}>
+                          <Link to={`?ilan=${item.job_id}`}>{item.organization}</Link>
+                          <span>{RESULT_SHORT[item.status] ?? item.status}</span>
+                        </p>
+                      ))}
+                      <p className="hint">Kurum siteleri her taramada kontrol edilir{results.data?.last_checked_at ? ` · son kontrol ${formatTimestamp(results.data.last_checked_at)}` : ""}.
+                        {results.data?.tracking_counts.error ? ` ${results.data.tracking_counts.error} ilanın kaynağı kontrol edilemedi.` : ""}</p>
+                    </>
+                  )}
                 </section>
                 <section className="panel">
                   <h2>Son başvurusu yaklaşanlar</h2>

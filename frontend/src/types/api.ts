@@ -24,6 +24,10 @@ export interface Profile {
   preferred_locations: string;
   accepts_shifts: boolean | null;
   yds_score: number | null;
+  ales_score: number | null;
+  ales_score_type: "" | "sayisal" | "sozel" | "esit_agirlik";
+  ales_year: number | null;
+  gpa: number | null;
   age: number | null;
   driver_license: boolean | null;
   experience_years: number | null;
@@ -145,7 +149,7 @@ export interface OfficialDocument {
 
 export interface JobEvent {
   id: number;
-  job_id: number;
+  job_id: number | null;
   kind: string;
   label: string;
   date: string;
@@ -153,7 +157,7 @@ export interface JobEvent {
   time: string;
   evidence: string;
   url: string;
-  source: "auto" | "user";
+  source: "auto" | "user" | "result" | "account" | "ylsy";
   user_edited: boolean;
   verified: boolean;
   previous_date: string | null;
@@ -165,6 +169,8 @@ export interface CalendarEvent extends JobEvent {
   category: MatchCategory;
   tracking: Tracking;
   cancelled: boolean;
+  /** Sonuç duyurusu, hesap sınavı ve YLSY tarihleri düzenlenemez. */
+  readonly?: boolean;
 }
 
 export interface TaskOccurrence {
@@ -223,6 +229,8 @@ export interface JobDetail {
   notes: string;
   has_pdf: boolean;
   events: JobEvent[];
+  results: ResultStatus;
+  account_records: AccountRecord[];
   job_verification: Verification | null;
   positions: MatchedPosition[];
 }
@@ -288,3 +296,106 @@ export interface NotificationSettings {
   telegram_available?: boolean;
 }
 
+
+export interface ResultAnnouncement {
+  id: number;
+  job_id: number;
+  title: string;
+  url: string;
+  document_url: string | null;
+  kind: string;
+  kind_label: string;
+  published_date: string | null;
+  found_at: string;
+  match_status: "matched" | "needs_review";
+  user_confirmed: boolean;
+  reasons: string[];
+  organization?: string;
+  job_title?: string;
+  tracking?: Tracking;
+}
+
+export type ResultCode = "found" | "needs_review" | "closed" | "waiting" | "pending" | "no_source" | "error" | "not_due" | "not_found";
+
+export interface ResultStatus {
+  status: ResultCode;
+  message: string;
+  announcements: ResultAnnouncement[];
+  source_url: string | null;
+  manual_url: string | null;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  account_only: boolean;
+  expected_date: string | null;
+}
+
+export interface ResultsOverview {
+  announcements: ResultAnnouncement[];
+  tracked: Array<{ job_id: number; organization: string; job_title: string; tracking: Tracking; status: ResultCode; message: string; last_checked_at: string | null; source_url: string | null; expected_date: string | null }>;
+  tracking_counts: Record<string, number>;
+  last_checked_at: string | null;
+}
+
+export interface AccountRecord {
+  id: number;
+  section: "applications" | "cancelled" | "exams";
+  section_label: string;
+  title: string;
+  organization: string;
+  status: string;
+  result: string;
+  applied_date: string | null;
+  exam_date: string | null;
+  exam_time: string;
+  exam_place: string;
+  job_id: number | null;
+  job_title: string | null;
+  match_status: "matched" | "needs_review" | "unmatched" | "confirmed";
+  last_seen_at: string;
+}
+
+export interface AccountOverview {
+  verified: boolean;
+  last_success: string | null;
+  last_attempt: { at: string; error?: string | null; sections: Record<string, { status: string; count?: number; detail?: string }>; menu?: string[] } | null;
+  running: boolean;
+  message: string;
+  can_import_here: boolean;
+  cannot_import_reason: string;
+  items: AccountRecord[];
+}
+
+export interface YlsyAnnouncement {
+  id: number;
+  title: string;
+  url: string;
+  category: string;
+  category_label: string;
+  published_date: string | null;
+  first_seen_at: string;
+  cycle: number | null;
+  summary: string;
+  attachments: Array<{ title: string; url: string }>;
+  backfill: boolean;
+}
+
+export interface YlsyCheck { name: string; status: "met" | "not_met" | "unknown" | "info"; detail: string; evidence: string }
+
+export interface YlsyField {
+  group_code: string; area_code: string; group: string; institution: string; field: string; quota: string; level: string;
+  countries: string; document: string; ales_types: string[]; ales_type_status: "met" | "not_met" | "unknown"; age_status: "met" | "not_met" | "unknown";
+}
+
+export interface YlsyOverview {
+  source: { name: string; url: string };
+  sync: { status: string; new: number; checked_at: string; error: string | null; last_success: string | null } | null;
+  notice: string;
+  latest_cycle: number | null;
+  current_year_announced: boolean;
+  announcements: YlsyAnnouncement[];
+  assessment: {
+    available: boolean; message: string; cycle?: number | null; guide_title?: string; guide_url?: string; guide_pdf?: string | null;
+    guide_date?: string | null; decision?: "eligible" | "not_eligible" | "needs_verification" | "no_fields"; checks?: YlsyCheck[];
+    department_codes?: string[]; fields?: YlsyField[]; application?: { start: string; end: string; evidence: string } | null; read_errors?: string[];
+  };
+}

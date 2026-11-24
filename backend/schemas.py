@@ -68,6 +68,10 @@ class ProfileUpdate(BaseModel):
     preferred_locations: str = Field(default="Türkiye geneli", max_length=500)
     accepts_shifts: bool | None = None
     yds_score: float | None = Field(default=None, ge=0, le=100)
+    ales_score: float | None = Field(default=None, ge=0, le=100)
+    ales_score_type: str = Field(default="", pattern="^(|sayisal|sozel|esit_agirlik)$")
+    ales_year: int | None = Field(default=None, ge=2000, le=2100)
+    gpa: float | None = Field(default=None, ge=0, le=4)
     age: int | None = Field(default=None, ge=15, le=80)
     driver_license: bool | None = None
     experience_years: float | None = Field(default=None, ge=0, le=60)

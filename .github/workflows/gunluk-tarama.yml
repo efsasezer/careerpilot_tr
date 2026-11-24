@@ -28,7 +28,7 @@ concurrency:
 jobs:
   tarama:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       # Pull request'te ve elle "deneme" seçildiğinde hiçbir şey kaydedilmez ve gönderilmez.
       DENEME: ${{ github.event_name == 'pull_request' || inputs.deneme == true }}

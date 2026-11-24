@@ -7,18 +7,20 @@ from datetime import date, datetime, timedelta
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from . import auth, config
+from . import auth, config, kk_account, results, ylsy
 from .database import Base, SessionLocal, engine, get_db
 from .document_sync import sync_jobs_documents
 from .eligibility import detect_application_status, detect_recruitment_method, parse_kpss_scores
 from .events import EVENT_LABELS, task_occurrences
-from .matching import build_matches, invalidate_cache, job_content_version
+from .matching import build_matches, invalidate_cache, job_content_version, job_summaries
 from .migrate import migrate as run_migrations
 from .models import (
-    CandidateProfile, DocumentPosition, Job, JobDocument, JobEvent, Notification, SourceListing,
+    AccountApplication, Announcement, CandidateProfile, DocumentPosition, Job, JobDocument, JobEvent, Notification,
+    ResultAnnouncement, ResultTracking, SourceListing,
     SourceSyncHistory, UserJobState, UserTask, UserVerification,
 )
 from .notifications import (
@@ -317,6 +319,10 @@ def job_detail(job_id: int, db: Session = Depends(get_db)):
         "notes": first["notes"],
         "has_pdf": _has_pdf(db, job),
         "events": [_event_payload(event) for event in events],
+        "results": results.job_result_status(db, job, first["tracking"]),
+        "account_records": [
+            item for item in kk_account.overview(db)["items"] if item["job_id"] == job.id
+        ],
         "job_verification": first["verification"] if job_level else None,
         "positions": [
             {key: value for key, value in item.items() if key not in ("description", "document_review")}
@@ -520,7 +526,58 @@ def calendar(start: date, end: date, db: Session = Depends(get_db)):
         (UserTask.recurrence != "none") & (UserTask.task_date <= end)
         & (or_(UserTask.until.is_(None), UserTask.until >= start)),
     ))).all()
+    # Bulunan sonuç duyuruları (yayım tarihiyle), hesaptan aktarılan sınavlar ve YLSY başvuru tarihleri.
+    for row in db.scalars(select(ResultAnnouncement).where(
+        ResultAnnouncement.user_decision != "rejected", ResultAnnouncement.published_date >= start, ResultAnnouncement.published_date <= end,
+    )).all():
+        item = by_job.get(row.job_id)
+        if item is None or item["tracking"] == "hidden":
+            continue
+        payload = results.announcement_payload(row)
+        result.append({
+            "id": -row.id, "job_id": row.job_id, "kind": "result_published",
+            "label": payload["kind_label"] + (" (eşleşme doğrulanmalı)" if payload["match_status"] != "matched" else " açıklandı"),
+            "date": row.published_date.isoformat(), "end_date": None, "time": "", "evidence": row.title, "url": row.url,
+            "source": "result", "user_edited": False, "verified": payload["match_status"] == "matched", "previous_date": None,
+            "organization": item["organization"], "job_title": item["title"].split(" — ")[0], "category": item["category"],
+            "tracking": item["tracking"], "cancelled": False, "readonly": True,
+        })
+    for row in db.scalars(select(AccountApplication).where(
+        AccountApplication.section == "exams", AccountApplication.exam_date >= start, AccountApplication.exam_date <= end,
+    )).all():
+        result.append({
+            "id": -(1_000_000 + row.id), "job_id": row.job_id, "kind": "exam", "label": "Sınav (Kariyer Kapısı hesabın)",
+            "date": row.exam_date.isoformat(), "end_date": None, "time": row.exam_time, "evidence": row.exam_place, "url": "",
+            "source": "account", "user_edited": False, "verified": True, "previous_date": None,
+            "organization": row.organization, "job_title": row.title, "category": "UYGUN", "tracking": "applied",
+            "cancelled": False, "readonly": True,
+        })
+    for index, entry in enumerate(_ylsy_dates(db)):
+        if start <= entry["date"] <= end:
+            result.append({
+                "id": -(2_000_000 + index), "job_id": None, "kind": entry["kind"], "label": entry["label"],
+                "date": entry["date"].isoformat(), "end_date": None, "time": "", "evidence": entry["evidence"], "url": entry["url"],
+                "source": "ylsy", "user_edited": False, "verified": True, "previous_date": None,
+                "organization": "MEB — YLSY / 1416 Bursları", "job_title": entry["title"], "category": "POTANSİYEL OLARAK UYGUN",
+                "tracking": "", "cancelled": False, "readonly": True,
+            })
+    result.sort(key=lambda item: (item["date"], item["time"] or ""))
     return {"events": result, "tasks": task_occurrences(tasks, start, end)}
+
+
+def _ylsy_dates(db: Session) -> list[dict]:
+    """Kılavuzlarda yazan YLSY başvuru başlangıç ve bitiş günleri."""
+    entries = []
+    for row in db.scalars(select(Announcement).where(Announcement.topic == "ylsy", Announcement.category == "guide")).all():
+        try:
+            window = (json.loads(row.facts or "{}").get("application")) or {}
+        except ValueError:
+            window = {}
+        for key, kind, label in (("start", "application_start", "YLSY başvurusu başlıyor"), ("end", "application_deadline", "YLSY son başvuru günü")):
+            if window.get(key):
+                entries.append({"kind": kind, "label": label, "date": date.fromisoformat(window[key]), "evidence": window.get("evidence", ""),
+                                "url": row.url, "title": row.title})
+    return entries
 
 
 @app.post("/jobs/{job_id}/events")
@@ -1007,3 +1064,144 @@ def public_listings(
             continue
         matching.append(_listing_payload(job, application_status))
     return {"total": len(matching), "items": matching[offset:offset + limit]}
+
+
+# ============================================================
+# SONUÇ TAKİBİ
+# ============================================================
+
+@app.get("/results")
+def list_results(db: Session = Depends(get_db)):
+    """Bulunan sonuç duyuruları ve kaydedilen/başvurulan ilanların sonuç takibi durumu."""
+    summaries = {item["job_id"]: item for item in job_summaries(build_matches(db, full=False))}
+    announcements = []
+    for row in db.scalars(select(ResultAnnouncement).where(ResultAnnouncement.user_decision != "rejected")
+                          .order_by(ResultAnnouncement.found_at.desc(), ResultAnnouncement.id.desc())).all():
+        summary = summaries.get(row.job_id)
+        if summary is None or summary["tracking"] == "hidden":
+            continue
+        announcements.append({
+            **results.announcement_payload(row), "organization": summary["organization"], "job_title": summary["title"],
+            "tracking": summary["tracking"],
+        })
+    tracked = []
+    for summary in summaries.values():
+        if summary["tracking"] not in ("saved", "applied", "awaiting"):
+            continue
+        status = results.job_result_status(db, db.get(Job, summary["job_id"]), summary["tracking"])
+        tracked.append({
+            "job_id": summary["job_id"], "organization": summary["organization"], "job_title": summary["title"],
+            "tracking": summary["tracking"], "status": status["status"], "message": status["message"],
+            "last_checked_at": status["last_checked_at"], "source_url": status["source_url"], "expected_date": status["expected_date"],
+        })
+    counts: dict[str, int] = {}
+    for row in db.scalars(select(ResultTracking)).all():
+        counts[row.status] = counts.get(row.status, 0) + 1
+    last = db.scalar(select(func.max(ResultTracking.last_checked_at)))
+    return {
+        "announcements": announcements, "tracked": tracked, "tracking_counts": counts,
+        "last_checked_at": last.isoformat(timespec="seconds") if last else None,
+    }
+
+
+class _Decision(BaseModel):
+    decision: str = Field(pattern="^(|confirmed|rejected)$")
+
+
+@app.post("/results/{announcement_id}/decision")
+def decide_result(announcement_id: int, payload: _Decision, db: Session = Depends(get_db)):
+    """Kullanıcı eşleşmeyi onaylar ya da "bu ilana ait değil" der; yeniden tarama bu kararı değiştirmez."""
+    row = db.get(ResultAnnouncement, announcement_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sonuç duyurusu bulunamadı")
+    row.user_decision = payload.decision
+    db.commit()
+    return results.announcement_payload(row)
+
+
+class _ResultSource(BaseModel):
+    url: str = Field(default="", max_length=1000)
+
+
+@app.put("/jobs/{job_id}/result-source")
+def set_result_source(job_id: int, payload: _ResultSource, db: Session = Depends(get_db)):
+    job = _public_job(db, job_id)
+    url = payload.url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    if url and not results._HOST.fullmatch(url.split("?")[0].rstrip("/")) and not results._HOST.match(url):
+        raise HTTPException(status_code=422, detail="Kurumun resmî (.tr uzantılı) internet adresini gir.")
+    tracking = db.get(ResultTracking, job_id)
+    if tracking is None:
+        tracking = ResultTracking(job_id=job_id)
+        db.add(tracking)
+    tracking.manual_url, tracking.status, tracking.detail = url, "pending", ""
+    db.commit()
+    return results.job_result_status(db, job, "")
+
+
+@app.post("/jobs/{job_id}/results/check")
+def check_job_results(job_id: int, db: Session = Depends(get_db)):
+    """Tek ilanın sonuç duyurularını hemen kontrol eder."""
+    job = _public_job(db, job_id)
+    entries = results.tracked_jobs(db, date.today())
+    entry = next((item for item in entries if item["job"].id == job_id), None)
+    if entry is None:
+        entry = {"job": job, "family": [job], "tracking": "", "priority": 0}
+    peers = [item for item in entries if item["job"].organization == job.organization]
+    results.check_job(db, entry, results.SiteReader(), peers, date.today())
+    db.commit()
+    background_refresh = process_notifications(db)
+    state = db.get(UserJobState, job_id)
+    return {**results.job_result_status(db, job, state.tracking if state else ""), "notifications": background_refresh["created"]}
+
+
+# ============================================================
+# YLSY DUYURULARI
+# ============================================================
+
+@app.get("/ylsy")
+def ylsy_overview(db: Session = Depends(get_db)):
+    return ylsy.overview(db, _get_or_create_profile(db))
+
+
+@app.post("/ylsy/sync")
+def ylsy_sync(db: Session = Depends(get_db)):
+    report = ylsy.sync_ylsy(db)
+    process_notifications(db)
+    return report
+
+
+# ============================================================
+# KARİYER KAPISI HESABI
+# ============================================================
+
+@app.get("/account/kariyer-kapisi")
+def account_overview(db: Session = Depends(get_db)):
+    return kk_account.overview(db)
+
+
+@app.post("/account/kariyer-kapisi/import", status_code=202)
+def account_import():
+    """Bu bilgisayarda görünür bir tarayıcı açar; e-Devlet girişini kullanıcı yapar."""
+    allowed, reason = kk_account.can_open_browser()
+    if not allowed:
+        raise HTTPException(status_code=409, detail=reason)
+    return {"started": kk_account.import_manager.start()}
+
+
+class _AccountMatch(BaseModel):
+    job_id: int | None = None
+
+
+@app.put("/account/applications/{record_id}/match")
+def set_account_match(record_id: int, payload: _AccountMatch, db: Session = Depends(get_db)):
+    row = db.get(AccountApplication, record_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
+    if payload.job_id is not None:
+        _public_job(db, payload.job_id)
+    row.job_id = payload.job_id
+    row.match_status = "confirmed" if payload.job_id else "unmatched"
+    db.commit()
+    return {"id": row.id, "job_id": row.job_id, "match_status": row.match_status}

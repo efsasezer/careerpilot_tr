@@ -1,5 +1,5 @@
 import { BellRing, CalendarClock, CheckCheck, Sparkles } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useOpenJob } from "../components/jobs/JobCard";
 import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState, QueryState } from "../components/shared/QueryState";
@@ -11,13 +11,14 @@ export default function NotificationsPage() {
   const read = useReadNotification();
   const readAll = useReadAllNotifications();
   const open = useOpenJob();
+  const navigate = useNavigate();
   const items = query.data?.items ?? [];
 
   return (
     <QueryState isLoading={query.isLoading} error={query.error}>
       <PageHeader
         title="Bildirimler"
-        description="Yaklaşan başvurular, son tarihler, sınav ve mülakatlar, bugünkü görevleriniz ve güncellenen ilanlar."
+        description="Sonuç duyuruları, YLSY duyuruları, yaklaşan başvurular, sınav ve mülakatlar, bugünkü görevleriniz ve güncellenen ilanlar."
         action={
           <>
             <Link to="/settings" className="button"><BellRing size={16} /> Bildirim ayarları</Link>
@@ -38,6 +39,7 @@ export default function NotificationsPage() {
                   onClick={() => {
                     if (!item.read) read.mutate(item.id);
                     if (item.job_id) open(item.job_id);
+                    else if (item.kind === "announcement" || item.kind === "ylsy_date") navigate("/ylsy");
                   }}
                 >
                   <span className={`notification-icon ${item.kind === "new_match" ? "" : "notification-icon-deadline"}`}><Icon size={17} aria-hidden /></span>

@@ -449,3 +449,27 @@ fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Sonuç takibi, YLSY ve hesap aktarımı */
+.result-line { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: .9rem; }
+.result-line span { color: var(--ink-3); text-align: right; }
+.result-line-error span { color: var(--bad); }
+.result-line-needs_review span, .result-line-no_source span { color: var(--warn); }
+.ylsy-section { margin-top: 20px; }
+.check-list { display: grid; gap: 14px; margin: 14px 0; padding: 0; list-style: none; }
+.check-list li { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.check-list li:last-child { border-bottom: 0; }
+.check-list p { margin-top: 4px; color: var(--ink-2); font-size: .93rem; }
+.check-list details, .announcement-list details { margin-top: 6px; color: var(--ink-3); font-size: .88rem; }
+.check-list summary, .announcement-list summary { cursor: pointer; }
+.table-wrap { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.data-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.data-table th, .data-table td { padding: 8px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.data-table th { color: var(--ink-3); font-weight: 600; white-space: nowrap; }
+.data-table tr:last-child td { border-bottom: 0; }
+.table-group td { background: var(--surface-2); font-weight: 620; }
+.ylsy-filter { width: 100%; max-width: 360px; margin-top: 10px; }
+.announcement-list { display: grid; gap: 10px; padding: 0; list-style: none; }
+.announcement-list > li { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.announcement-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--ink-3); font-size: .86rem; }
+.plain-list { display: grid; gap: 8px; margin: 0 0 14px; padding-left: 18px; color: var(--ink-2); font-size: .93rem; }
