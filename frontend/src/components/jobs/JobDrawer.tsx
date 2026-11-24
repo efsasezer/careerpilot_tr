@@ -7,6 +7,7 @@ import { VerifyButtons } from "./VerifyButtons";
 import { getApiUrl } from "../../services/api/client";
 import {
   useAcknowledgeUpdate, useAddEvent, useDeleteEvent, useJobDetail, useRetryReading, useSetTracking, useSetVerification, useVerifyEvent,
+  useCheckJobResults, useDecideResult, useSetResultSource,
 } from "../../services/api/hooks";
 import type { JobDetail, MatchedPosition, Tracking } from "../../types/api";
 import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp } from "../../utils/format";
@@ -224,6 +225,8 @@ function DrawerBody({ job }: { job: JobDetail }) {
 
       <PositionDetail jobId={job.id} position={selected} multiple={positions.length > 1} />
 
+      <ResultSection jobId={job.id} results={job.results} records={job.account_records} />
+
       <section className="drawer-section">
         <h3>Tarihler</h3>
         {job.events.length ? (
@@ -270,6 +273,60 @@ function DrawerBody({ job }: { job: JobDetail }) {
       )}
       <p className="hint">Bu değerlendirme otomatik bir ön elemedir; başvurmadan önce resmî ilanı mutlaka okuyun.</p>
     </div>
+  );
+}
+
+const RESULT_TONE: Record<string, string> = {
+  found: "notice-ok", needs_review: "notice-warn", error: "notice-bad", no_source: "notice-warn",
+};
+
+function ResultSection({ jobId, results, records }: { jobId: number; results: JobDetail["results"]; records: JobDetail["account_records"] }) {
+  const decide = useDecideResult();
+  const setSource = useSetResultSource();
+  const check = useCheckJobResults();
+  const [url, setUrl] = useState(results.manual_url ?? "");
+  return (
+    <section className="drawer-section">
+      <h3>Sonuç takibi</h3>
+      <p className={`notice ${RESULT_TONE[results.status] ?? "notice-info"}`}>{results.message}</p>
+      {results.announcements.length > 0 && (
+        <ul className="event-list">
+          {results.announcements.map((item) => (
+            <li key={item.id}>
+              <div>
+                <strong>{item.kind_label}{item.match_status === "matched" ? "" : " · eşleşme doğrulanmalı"}</strong>
+                <span>{item.published_date ? `Yayım: ${formatDate(item.published_date)}` : "Yayım tarihi duyuruda bulunamadı"} · bulundu: {formatTimestamp(item.found_at)}</span>
+                <a href={item.url} target="_blank" rel="noreferrer">{item.title} <ExternalLink size={12} /></a>
+                {item.document_url && <a href={item.document_url} target="_blank" rel="noreferrer">Ekli belge / liste <ExternalLink size={12} /></a>}
+                {item.reasons.length > 0 && <details><summary>Neden bu ilanla eşleşti?</summary><p>{item.reasons.join(" · ")}</p></details>}
+              </div>
+              <div className="button-row">
+                {item.match_status !== "matched" && <button className="button button-small" disabled={decide.isPending} onClick={() => decide.mutate({ id: item.id, decision: "confirmed" })}>Bu ilanın sonucu</button>}
+                {item.user_confirmed && <span className="chip chip-accent">Onayladın</span>}
+                <button className="button button-small" disabled={decide.isPending} onClick={() => decide.mutate({ id: item.id, decision: "rejected" })}>Bu ilana ait değil</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {records.map((record) => (
+        <p className="hint" key={record.id}>
+          Kariyer Kapısı hesabın ({record.section_label}): {record.status || "durum yok"}{record.result ? ` · sonuç: ${record.result}` : ""}
+          {record.exam_date ? ` · sınav ${formatDate(record.exam_date)} ${record.exam_time}` : ""}
+        </p>
+      ))}
+      <dl className="fact-list">
+        <div><dt>Kontrol edilen adres</dt><dd>{results.source_url ? <a href={results.source_url} target="_blank" rel="noreferrer">{results.source_url.replace(/^https?:\/\//, "")}</a> : "Bilinmiyor"}</dd></div>
+        <div><dt>Son kontrol</dt><dd>{formatTimestamp(results.last_checked_at, "Henüz yapılmadı")}</dd></div>
+        {results.expected_date && <div><dt>İlana göre sonuç tarihi</dt><dd>{formatDate(results.expected_date)}</dd></div>}
+      </dl>
+      <form className="inline-form" onSubmit={(event) => { event.preventDefault(); setSource.mutate({ jobId, url }); }}>
+        <input aria-label="Sonuçların yayımlanacağı resmî adres" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="Kurumun duyuru sayfası (ör. www.kurum.gov.tr/duyurular)" />
+        <button className="button button-small" disabled={setSource.isPending}>Adresi kaydet</button>
+        <button type="button" className="button button-small" disabled={check.isPending} onClick={() => check.mutate(jobId)}>{check.isPending ? "Kontrol ediliyor…" : "Şimdi kontrol et"}</button>
+      </form>
+      {(setSource.error ?? check.error ?? decide.error) && <p className="field-error" role="alert">{(setSource.error ?? check.error ?? decide.error)?.message}</p>}
+    </section>
   );
 }
 

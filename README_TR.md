@@ -162,3 +162,23 @@ npm --prefix frontend run build
 ```
 
 Backend testleri geçici bir veritabanı kullanır; `careerpilot.db` dosyasına dokunmaz.
+
+## Sonuç takibi, YLSY duyuruları ve Kariyer Kapısı hesabı
+
+**Sonuç takibi.** Her taramada (elle "Şimdi tara", `python -m backend.sync` ve günlük GitHub Actions) başvurusu biten
+ilanların kurum sitesi kontrol edilir. Adres ilan metninden alınır ("sonuçlar www.kurum.gov.tr adresinde ilan edilecektir");
+metinde adres yoksa ilan panelindeki "Sonuç takibi" bölümünden elle eklenebilir. Bulunan duyuru; kadro türü, kişi sayısı,
+yıl, yayım tarihi ve duyuruda geçen ilan tarihleriyle eşleştirilir. Emin olunamayan duyuru "Eşleşme doğrulanmalı" olarak
+gösterilir. Durumlar ayrı tutulur: sonuç bulundu, kontrol edildi ama yok, henüz tarihi gelmedi, kaynak kontrol edilemedi,
+resmî adres bilinmiyor. robots.txt'e uyulur; sonuç listelerindeki kişi adları saklanmaz. Kapatmak için:
+`CAREERPILOT_DISABLE_RESULT_CHECK=true`.
+
+**YLSY duyuruları.** Kaynak yalnızca MEB Yükseköğretim ve Yurt Dışı Eğitim Genel Müdürlüğü'dür (yyegm.meb.gov.tr, RSS akışı
+ve duyuru sayfaları). Başlığında "YLSY" ya da "1416" geçen duyurular eklenir. Kılavuz yayımlandığında şartlar ve tercih
+tabloları okunur; adayın ALES puanı, puan türü, sınav yılı, not ortalaması ve doğum tarihi profilden alınır. Puan türü
+girilmeden uygunluk kararı verilmez.
+
+**Kariyer Kapısı hesabı.** `python -m backend.kk_account` ya da arayüzdeki "Tarayıcıyı aç ve aktar" düğmesi bu bilgisayarda
+görünür bir tarayıcı açar. e-Devlet girişini kullanıcı yapar; şifre okunmaz ve saklanmaz, oturum pencereyle birlikte kapanır.
+Sunucuda (Render, GitHub Actions) çalışmaz ve kendiliğinden yinelenemez. Hesap sayfalarının yapısı yalnızca oturum açıkken
+görülebildiğinden ilk gerçek aktarıma kadar "doğrulanmadı" olarak işaretlidir.

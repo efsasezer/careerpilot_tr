@@ -70,9 +70,10 @@ def migrate():
         "internship_description", "certificates", "programming_language_evidence",
         "notes", "updated_at", "kpss_scores", "faculty", "department_aliases", "gender", "special_status", "birth_date", "military_status",
         "educations", "experiences", "experience_state", "foreign_language", "preferences",
+        "ales_score", "ales_score_type", "ales_year", "gpa",
     }
     schema_change_needed = (
-        not {"source_listings", "source_sync_history", "user_job_state", "user_verifications", "job_events", "user_tasks", "user_sessions"} <= tables
+        not {"source_listings", "source_sync_history", "user_job_state", "user_verifications", "job_events", "user_tasks", "user_sessions", "result_announcements", "result_tracking", "announcements", "account_applications"} <= tables
         or not required_job_columns <= job_columns
         or not required_profile_columns <= profile_columns
         or ("job_events" in tables and "verified" not in event_columns)
@@ -126,6 +127,10 @@ def migrate():
     add_column_if_missing(cursor, "candidate_profile", "experience_state", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "foreign_language", "TEXT", default="''")
     add_column_if_missing(cursor, "candidate_profile", "preferences", "TEXT", default="'{}'")
+    add_column_if_missing(cursor, "candidate_profile", "ales_score", "REAL")
+    add_column_if_missing(cursor, "candidate_profile", "ales_score_type", "TEXT", default="''")
+    add_column_if_missing(cursor, "candidate_profile", "ales_year", "INTEGER")
+    add_column_if_missing(cursor, "candidate_profile", "gpa", "REAL")
     add_column_if_missing(cursor, "job_documents", "ocr_confidence", "REAL")
     add_column_if_missing(cursor, "job_events", "verified", "BOOLEAN", default="0")
     add_column_if_missing(cursor, "candidate_profile", "department_aliases", "TEXT", default="''")

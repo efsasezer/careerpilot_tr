@@ -68,7 +68,7 @@ export function UpcomingList({ includeAll, hiddenFilters }: { includeAll: boolea
                           <span>{event.job_title}</span>
                           {event.time && <span className="upcoming-time">Saat {event.time}</span>}
                         </div>
-                        <button className="button button-small" onClick={() => openJob(event.job_id)}>İlanı gör</button>
+                        {event.job_id !== null && <button className="button button-small" onClick={() => openJob(event.job_id as number)}>İlanı gör</button>}
                       </article>
                     );
                   })}

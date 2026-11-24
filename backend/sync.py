@@ -452,7 +452,8 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
     return report
 
 
-def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, scan_documents: bool = True) -> dict:
+def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, scan_documents: bool = True,
+             check_results: bool = True) -> dict:
     """Bütün kaynakları tarar, ek belgeleri okur ve yeni eşleşmeler için bildirim üretir."""
     from .notifications import process_notifications
 
@@ -492,6 +493,21 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
 
     refresh_all_events(db)
     invalidate_cache()
+    # Sonuç duyuruları ve duyuru akışları (YLSY) her taramanın parçasıdır.
+    result_check = announcement_check = None
+    if check_results and not config.env_flag("CAREERPILOT_DISABLE_RESULT_CHECK"):
+        from .results import check_results as run_result_check
+        from .ylsy import sync_ylsy
+
+        try:
+            result_check = run_result_check(db, on_progress=on_progress)
+        except Exception as error:  # sonuç takibindeki hata ilan taramasını bozmaz
+            db.rollback()
+            logger.exception("Result check failed")
+            result_check = {"error": str(error)[:300]}
+        if on_progress:
+            on_progress("YLSY duyuruları", 0, 0)
+        announcement_check = sync_ylsy(db)
     notifications = process_notifications(db)
     for report in results.values():
         report.pop("touched_job_ids", None)
@@ -499,6 +515,8 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
         "success": all(report["status"] == "ok" for report in results.values()),
         "results": results,
         "document_scan": document_scan,
+        "result_check": result_check,
+        "announcement_check": announcement_check,
         "notifications": notifications,
     }
 
@@ -752,6 +770,18 @@ def main(argv: list[str] | None = None) -> int:
         )
     notifications = report.get("notifications") or {}
     lines.append("")
+    results = report.get("result_check") or {}
+    if results.get("error"):
+        lines.append(f"Sonuç takibi çalışmadı: {results['error']}")
+    elif results:
+        lines.append(
+            f"Sonuç takibi: {results['tracked']} ilan izleniyor · {results['checked']} kontrol edildi · "
+            f"{results['found']} yeni sonuç duyurusu · {results['errors']} kaynak kontrol edilemedi · "
+            f"{results['no_source']} ilanda resmî adres yok · {results['skipped']} sonraki taramaya kaldı"
+        )
+    ylsy = report.get("announcement_check") or {}
+    if ylsy:
+        lines.append(f"YLSY duyuruları: {ylsy.get('status')} · {ylsy.get('new', 0)} yeni" + (f" · {ylsy['error']}" if ylsy.get("error") else ""))
     lines.append(f"Yeni bildirim: {notifications.get('created', 0)} · Kanallar: {notifications.get('channels') or 'gönderim yok'}")
     summary = "\n".join(lines)
     print(summary)

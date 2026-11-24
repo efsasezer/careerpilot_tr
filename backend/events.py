@@ -75,7 +75,7 @@ def _kind(normalized: str) -> str | None:
     has = lambda *words: any(word in normalized for word in words)  # noqa: E731
     if any(word in normalized for word in _IGNORED_CONTEXT):
         return None
-    if has("sonuc") and has("aciklan", "ilan edil", "duyurul", "yayimlan", "yayinlan"):
+    if has("sonuc") and has("aciklan", "ilan edil", "duyurul", "yayimlan", "yayinlan", "sonuc ilan tarihi", "sonuclari ilan", "sonucu ilan"):
         return "result"
     if has("sozlu", "mulakat") and has("yapilacak", "tarih", "gerceklestiril", "alinacak"):
         return "interview"
@@ -86,6 +86,42 @@ def _kind(normalized: str) -> str | None:
     if has("atama") and has("yapilacak", "atamalar") and not has("basvuru"):
         return "appointment"
     return None
+
+
+_RESULT_STAGES = (
+    ("on degerlendirme", "Ön değerlendirme sonucu"), ("nihai", "Nihai sonuç"), ("yazili", "Yazılı sınav sonucu"),
+    ("sozlu", "Sözlü sınav sonucu"), ("mulakat", "Mülakat sonucu"), ("giris sinav", "Giriş sınavı sonucu"),
+    ("kura", "Kura sonucu"), ("basvuru sonuc", "Başvuru sonucu"),
+)
+_OTHER_LABEL = ("basvuru", "sinav tarihi", "sinavi tarihi", "baslangic", "bitis", "giris tarihi")
+
+
+def _result_dates(normalized: str) -> list[tuple[date, str]]:
+    """Cümledeki her "sonuç" ifadesine ait tarihi bulur: önce ifadeden hemen sonraki, yoksa hemen önceki tarih.
+
+    Tablodan düzleşmiş metinlerde ("Son Başvuru Tarihi 20.11.2026 Sonuç İlan Tarihi 27.11.2026") araya başka
+    bir tarih etiketi giriyorsa tarih o sonuca bağlanmaz; yanlış tarih yazmaktansa olay üretilmez.
+    """
+    dated = _dates(normalized)
+    found: list[tuple[date, str]] = []
+    for match in re.finditer(r"sonuc", normalized):
+        position = match.start()
+        chosen = None
+        after = next(((value, start) for value, start in dated if start > position), None)
+        if after and after[1] - position <= 110 and not any(label in normalized[position:after[1]] for label in _OTHER_LABEL):
+            chosen = after[0]
+        if chosen is None:
+            before = next(((value, start) for value, start in reversed(dated) if start < position), None)
+            if before and position - before[1] <= 60 and "tarih" in normalized[before[1]:position] \
+                    and not any(label in normalized[before[1]:position] for label in _OTHER_LABEL):
+                chosen = before[0]
+        if chosen is None:
+            continue
+        context = normalized[max(0, position - 45):position + 12]
+        label = next((name for word, name in _RESULT_STAGES if word in context), "")
+        if (chosen, label) not in found and chosen not in [value for value, _ in found]:
+            found.append((chosen, label))
+    return found
 
 
 def extract_events(text: str, *, today: date | None = None) -> list[dict]:
@@ -101,6 +137,20 @@ def extract_events(text: str, *, today: date | None = None) -> list[dict]:
         kind = _kind(normalized)
         if kind is None:
             continue
+        if kind == "result":
+            url = ""
+            match = _URL.search(sentence.casefold())
+            if match:
+                url = match.group(0) if match.group(0).startswith("http") else f"https://{match.group(0)}"
+            for value, label in _result_dates(normalized):
+                if not earliest <= value <= latest or (kind, value) in seen:
+                    continue
+                seen.add((kind, value))
+                events.append({
+                    "kind": kind, "date": value, "end_date": None, "time": "", "title": label,
+                    "evidence": " ".join(sentence.split())[:500], "url": url[:1000],
+                })
+            continue
         dates = [value for value, _ in _dates(normalized) if earliest <= value <= latest]
         if not dates:
             continue
@@ -112,14 +162,9 @@ def extract_events(text: str, *, today: date | None = None) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        url = ""
-        if kind == "result":
-            match = _URL.search(sentence.casefold())
-            if match:
-                url = match.group(0) if match.group(0).startswith("http") else f"https://{match.group(0)}"
         events.append({
-            "kind": kind, "date": start, "end_date": end, "time": _time(normalized),
-            "evidence": " ".join(sentence.split())[:500], "url": url[:1000],
+            "kind": kind, "date": start, "end_date": end, "time": _time(normalized), "title": "",
+            "evidence": " ".join(sentence.split())[:500], "url": "",
         })
     return events
 
@@ -150,7 +195,7 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
         if value:
             evidence, time_text = _application_evidence(text, value)
             wanted.append({"kind": kind, "date": value, "end_date": None, "time": time_text,
-                           "evidence": evidence or "Kaynağın ilan listesindeki başvuru tarihi.", "url": ""})
+                           "evidence": evidence or "Kaynağın ilan listesindeki başvuru tarihi.", "url": "", "title": ""})
     if job.status != "İptal edildi":
         wanted.extend(extract_events(text, today=today))
 
@@ -176,6 +221,7 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
             if not same.user_edited and not same.deleted:
                 same.evidence, same.url = item["evidence"], item["url"] or same.url
                 same.event_time, same.end_date = item["time"], item["end_date"]
+                same.title = item.get("title", "") or same.title
             continue
         # Aynı türde tek bir otomatik olay varsa ve tarihi değiştiyse: eski değer saklanır.
         movable = [event for event in candidates if event.id not in kept and not event.user_edited and not event.deleted]
@@ -186,11 +232,12 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
             event.previous_date, event.event_date = event.event_date, item["date"]
             event.end_date, event.event_time = item["end_date"], item["time"]
             event.evidence, event.url, event.updated_at = item["evidence"], item["url"], now
+            event.title = item.get("title", "")
             changed += 1
             continue
         event = JobEvent(
             job_id=job.id, kind=item["kind"], event_date=item["date"], end_date=item["end_date"], event_time=item["time"],
-            evidence=item["evidence"], url=item["url"], source="auto", updated_at=now,
+            evidence=item["evidence"], url=item["url"], source="auto", updated_at=now, title=item.get("title", ""),
         )
         db.add(event)
         db.flush()

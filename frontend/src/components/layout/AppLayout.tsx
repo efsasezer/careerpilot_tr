@@ -1,4 +1,4 @@
-import { Bell, Bookmark, BookmarkCheck, CalendarDays, Compass, LayoutDashboard, ListChecks, LogOut, Menu, Radio, RefreshCw, SendHorizontal, Settings, UserRound, X } from "lucide-react";
+import { Bell, GraduationCap, KeyRound, Bookmark, BookmarkCheck, CalendarDays, Compass, LayoutDashboard, ListChecks, LogOut, Menu, Radio, RefreshCw, SendHorizontal, Settings, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -12,6 +12,8 @@ const navigation = [
   { to: "/saved", label: "Kaydettiklerim", icon: BookmarkCheck },
   { to: "/applied", label: "Başvurduklarım", icon: SendHorizontal },
   { to: "/calendar", label: "Başvuru takvimi", icon: CalendarDays },
+  { to: "/ylsy", label: "YLSY duyuruları", icon: GraduationCap },
+  { to: "/kariyer-kapisi", label: "Kariyer Kapısı hesabım", icon: KeyRound },
   { to: "/notifications", label: "Bildirimler", icon: Bell },
   { to: "/sources", label: "Kaynaklar", icon: Radio },
   { to: "/profile", label: "Profilim", icon: UserRound },
@@ -36,7 +38,7 @@ export function AppLayout({ children, onLogout }: { children: ReactNode; onLogou
   const wasRunning = useRef(false);
   useEffect(() => {
     if (wasRunning.current && !running) {
-      for (const key of ["matches", "sources", "notifications"]) queryClient.invalidateQueries({ queryKey: [key] });
+      for (const key of ["matches", "sources", "notifications", "results", "ylsy"]) queryClient.invalidateQueries({ queryKey: [key] });
     }
     wasRunning.current = running;
   }, [running, queryClient]);

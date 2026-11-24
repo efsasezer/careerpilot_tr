@@ -14,6 +14,7 @@ Kurallar:
 from datetime import date
 import json
 import re
+from functools import lru_cache
 import unicodedata
 
 from .kariyerkapisi import _label_values
@@ -93,9 +94,17 @@ PROFESSION_TERMS = {
 }
 
 
+_TURKISH_FOLD = str.maketrans({"ı": "i", "İ": "i", "ş": "s", "ğ": "g", "ü": "u", "ö": "o", "ç": "c"})
+
+
 def normalize_text(value):
-    value = (value or "").translate(str.maketrans({"ı": "i", "İ": "i", "ş": "s", "ğ": "g", "ü": "u", "ö": "o", "ç": "c"}))
-    value = unicodedata.normalize("NFKD", value.casefold())
+    return _normalize_cached(value) if isinstance(value, str) and value else ""
+
+
+@lru_cache(maxsize=4096)
+def _normalize_cached(value: str) -> str:
+    # Aynı ilan metni her kadro ve her şart için yeniden sadeleştirilir; sonuç önbelleğe alınır.
+    value = unicodedata.normalize("NFKD", value.translate(_TURKISH_FOLD).casefold())
     return "".join(char for char in value if not unicodedata.combining(char))
 
 

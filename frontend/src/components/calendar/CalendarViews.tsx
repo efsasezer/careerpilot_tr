@@ -233,9 +233,9 @@ function DayItems({ day, events, tasks, compact = false, onEditTask }: {
           </div>
           {!compact && (
             <div className="day-item-actions">
-              <button className="button button-small" onClick={() => open(event.job_id)}>İlana git</button>
-              <button className="icon-button" aria-label="Olayı düzenle" onClick={() => setEditing(editing === event.id ? null : event.id)}><Pencil size={15} /></button>
-              <button className="icon-button" aria-label="Olayı sil" onClick={() => removeEvent.mutate(event.id)}><Trash2 size={15} /></button>
+              {event.job_id !== null && <button className="button button-small" onClick={() => open(event.job_id as number)}>İlana git</button>}
+              {!event.readonly && <button className="icon-button" aria-label="Olayı düzenle" onClick={() => setEditing(editing === event.id ? null : event.id)}><Pencil size={15} /></button>}
+              {!event.readonly && <button className="icon-button" aria-label="Olayı sil" onClick={() => removeEvent.mutate(event.id)}><Trash2 size={15} /></button>}
             </div>
           )}
         </li>

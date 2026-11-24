@@ -12,6 +12,8 @@ const SourcesPage = lazy(() => import("../pages/SourcesPage"));
 const CalendarPage = lazy(() => import("../pages/CalendarPage"));
 const NotificationsPage = lazy(() => import("../pages/NotificationsPage"));
 const SettingsPage = lazy(() => import("../pages/SettingsPage"));
+const YlsyPage = lazy(() => import("../pages/YlsyPage"));
+const AccountPage = lazy(() => import("../pages/AccountPage"));
 
 function SignInPage() {
   const [password, setPassword] = useState("");
@@ -80,6 +82,8 @@ export default function App() {
           <Route path="/saved" element={<JobsPage mode="saved" key="saved" />} />
           <Route path="/applied" element={<JobsPage mode="applied" key="applied" />} />
           <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/ylsy" element={<YlsyPage />} />
+          <Route path="/kariyer-kapisi" element={<AccountPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/sources" element={<SourcesPage />} />
           <Route path="/profile" element={<ProfilePage />} />

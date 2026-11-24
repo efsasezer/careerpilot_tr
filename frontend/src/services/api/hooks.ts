@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiRequest } from "./client";
 import { useAuth } from "./auth";
 import type {
-  CalendarData, EventInput, JobDetail, MatchResponse, NotificationList, NotificationSettings,
+  AccountOverview, CalendarData, EventInput, JobDetail, ResultsOverview, YlsyOverview, MatchResponse, NotificationList, NotificationSettings,
   Profile, ProfileUpdate, Source, SyncStatus, Task, TaskInput, Tracking, Verification,
 } from "../../types/api";
 
@@ -148,3 +148,24 @@ export const useSaveNotificationSettings = () =>
   );
 export const useTestNotification = () =>
   useApiMutation<void, { channels: Record<string, string> }>(() => ({ path: "/notifications/test", method: "POST" }), []);
+
+const RESULT_KEYS = ["results", "job:", "calendar", "notifications"];
+
+export const useResults = () => useApiQuery<ResultsOverview>("results", "/results");
+export const useYlsy = () => useApiQuery<YlsyOverview>("ylsy", "/ylsy");
+export const useAccount = () =>
+  useApiQuery<AccountOverview>("account", "/account/kariyer-kapisi", {
+    refetchInterval: (query) => ((query.state.data as AccountOverview | undefined)?.running ? 2_000 : false),
+  });
+export const useDecideResult = () =>
+  useApiMutation<{ id: number; decision: "" | "confirmed" | "rejected" }, unknown>(
+    ({ id, decision }) => ({ path: `/results/${id}/decision`, method: "POST", body: { decision } }), RESULT_KEYS,
+  );
+export const useSetResultSource = () =>
+  useApiMutation<{ jobId: number; url: string }, unknown>(({ jobId, url }) => ({ path: `/jobs/${jobId}/result-source`, method: "PUT", body: { url } }), RESULT_KEYS);
+export const useCheckJobResults = () =>
+  useApiMutation<number, unknown>((jobId) => ({ path: `/jobs/${jobId}/results/check`, method: "POST" }), RESULT_KEYS);
+export const useYlsySync = () =>
+  useApiMutation<void, unknown>(() => ({ path: "/ylsy/sync", method: "POST" }), ["ylsy", "notifications", "calendar"]);
+export const useAccountImport = () =>
+  useApiMutation<void, unknown>(() => ({ path: "/account/kariyer-kapisi/import", method: "POST" }), ["account"]);

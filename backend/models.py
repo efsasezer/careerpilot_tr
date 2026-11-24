@@ -166,6 +166,11 @@ class CandidateProfile(Base):
     preferred_locations: Mapped[str] = mapped_column(String(500), default="Türkiye geneli")
     accepts_shifts: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     yds_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ales_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # "" (doğrulanmadı) | sayisal | sozel | esit_agirlik
+    ales_score_type: Mapped[str] = mapped_column(String(20), default="")
+    ales_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gpa: Mapped[float | None] = mapped_column(Float, nullable=True)  # 4'lük sistem
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
     driver_license: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     experience_years: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -285,3 +290,92 @@ class UserTask(Base):
     # Tamamlanan günler (ISO tarih listesi, JSON). Tekrarlamayan görevde tek öğe.
     completed_dates: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+# ---------------------------------------------------------------------------
+# Sonuç takibi
+# ---------------------------------------------------------------------------
+
+class ResultAnnouncement(Base):
+    """Kurumun resmî sitesinde bulunan sonuç duyurusu. Kayıtlar silinmez; eski aşamalar korunur."""
+
+    __tablename__ = "result_announcements"
+    __table_args__ = (UniqueConstraint("job_id", "url", name="uq_result_announcement"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(Integer, index=True)
+    url: Mapped[str] = mapped_column(String(1200))
+    title: Mapped[str] = mapped_column(String(500), default="")
+    # application | exam | interview | final | list | placement | result
+    kind: Mapped[str] = mapped_column(String(20), default="result")
+    published_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    document_url: Mapped[str] = mapped_column(String(1200), default="")
+    found_on: Mapped[str] = mapped_column(String(1200), default="")
+    # matched | needs_review
+    match_status: Mapped[str] = mapped_column(String(20), default="needs_review")
+    match_reasons: Mapped[str] = mapped_column(Text, default="[]")
+    # "" | confirmed | rejected — kullanıcının kararı; yeniden tarama değiştirmez
+    user_decision: Mapped[str] = mapped_column(String(12), default="")
+    found_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ResultTracking(Base):
+    """İlan başına sonuç takibinin durumu (hangi adres, en son ne zaman, ne oldu)."""
+
+    __tablename__ = "result_tracking"
+
+    job_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_url: Mapped[str] = mapped_column(String(1200), default="")
+    manual_url: Mapped[str] = mapped_column(String(1200), default="")  # kullanıcının verdiği adres
+    # pending | checked | error | no_source
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    account_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Duyuru akışları (YLSY) ve Kariyer Kapısı hesabından aktarılan kayıtlar
+# ---------------------------------------------------------------------------
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+    __table_args__ = (UniqueConstraint("topic", "url", name="uq_announcement_url"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    topic: Mapped[str] = mapped_column(String(30), index=True)  # ylsy
+    url: Mapped[str] = mapped_column(String(1200))
+    title: Mapped[str] = mapped_column(String(500))
+    category: Mapped[str] = mapped_column(String(30), default="")
+    published_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    attachments: Mapped[str] = mapped_column(Text, default="[]")  # [{"title","url"}]
+    facts: Mapped[str] = mapped_column(Text, default="{}")  # belgeden çıkarılan şartlar ve tarihler
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class AccountApplication(Base):
+    """Kullanıcının Kariyer Kapısı hesabından kendi oturumuyla aktardığı başvuru/sınav kaydı."""
+
+    __tablename__ = "account_applications"
+    __table_args__ = (UniqueConstraint("section", "fingerprint", name="uq_account_application"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    section: Mapped[str] = mapped_column(String(20))  # applications | cancelled | exams
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(500), default="")
+    organization: Mapped[str] = mapped_column(String(300), default="")
+    status: Mapped[str] = mapped_column(String(200), default="")
+    applied_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    exam_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    exam_time: Mapped[str] = mapped_column(String(5), default="")
+    exam_place: Mapped[str] = mapped_column(String(500), default="")
+    result: Mapped[str] = mapped_column(String(300), default="")
+    raw: Mapped[str] = mapped_column(Text, default="{}")
+    job_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # matched | needs_review | unmatched
+    match_status: Mapped[str] = mapped_column(String(20), default="unmatched")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime)
