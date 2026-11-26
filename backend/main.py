@@ -451,6 +451,8 @@ def delete_job(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="İlan bulunamadı")
     if job.source_name not in ("Manuel Giriş", "Toplu Yükleme"):
         raise HTTPException(status_code=409, detail="Kaynaklardan gelen ilanlar silinemez; gizlemek için takip durumunu kullanın.")
+    # Elle eklenen ilanın bildirimleri ilandan bağımsız kalır (yabancı anahtar ihlali olmaz).
+    db.execute(update(Notification).where(Notification.job_id == job_id).values(job_id=None))
     db.delete(job)
     db.commit()
     invalidate_cache()
