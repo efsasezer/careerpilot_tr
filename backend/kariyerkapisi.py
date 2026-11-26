@@ -21,7 +21,64 @@ except ImportError:  # pragma: no cover - isteğe bağlı bağımlılık
 
 
 URL = "https://kariyerkapisi.gov.tr/isealim"
+API_HOST = "api.kariyerkapisi.gov.tr"
 DETAIL_MARKER = "--- Kariyer Kapısı ilan detayları ---"
+_TRANSIENT_NAVIGATION_ERRORS = (
+    "net::err_name_not_resolved",
+    "net::err_timed_out",
+    "net::err_connection_reset",
+    "net::err_connection_closed",
+    "net::err_network_changed",
+    "net::err_internet_disconnected",
+)
+
+
+def _is_transient_navigation_error(error):
+    message = str(error).casefold()
+    status = re.search(r"\bhttp(?:\s+durum\s+kodu|\s+yanıtı)?\s+(\d{3})\b", message)
+    return (
+        isinstance(error, PlaywrightTimeoutError)
+        or any(marker in message for marker in _TRANSIENT_NAVIGATION_ERRORS)
+        or bool(status and int(status.group(1)) in {408, 425, 429, 500, 502, 503, 504})
+    )
+
+
+def _watch_api_failures(page):
+    failures = []
+
+    def record_request_failure(request):
+        if (urlsplit(request.url).hostname or "").casefold() == API_HOST:
+            failures.append(f"{request.url}: {request.failure or 'istek başarısız'}")
+
+    def record_response(response):
+        if (
+            response.status >= 400
+            and (urlsplit(response.url).hostname or "").casefold() == API_HOST
+        ):
+            failures.append(f"{response.url}: HTTP {response.status}")
+
+    page.on("requestfailed", record_request_failure)
+    page.on("response", record_response)
+    return failures
+
+
+def _api_failure(failures):
+    return RuntimeError(f"Kariyer Kapısı API erişim hatası: {failures[-1]}")
+
+
+def _goto_with_retries(page, url, *, before_navigation=None, after_navigation=None, **kwargs):
+    for attempt in range(3):
+        try:
+            if before_navigation is not None:
+                before_navigation()
+            response = page.goto(url, **kwargs)
+            if after_navigation is not None:
+                after_navigation()
+            return response
+        except Exception as error:
+            if attempt == 2 or not _is_transient_navigation_error(error):
+                raise
+            time.sleep(1.5 * (attempt + 1))
 
 
 @contextmanager
@@ -189,19 +246,31 @@ def scrape_public_listing_details(listings):
         try:
             page = browser.new_page(locale="tr-TR")
             page.route("**/*", _block_document_requests)
+            api_failures = _watch_api_failures(page)
             for url in urls:
                 try:
                     parsed_url = urlsplit(url)
                     if parsed_url.scheme != "https" or parsed_url.netloc.casefold() != "kariyerkapisi.gov.tr" or not parsed_url.path.casefold().startswith("/ilandetay"):
                         raise ValueError("İlan bağlantısı Kariyer Kapısı detay sayfası değil.")
-                    response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
+
+                    def wait_for_detail_data():
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=5000)
+                        except PlaywrightTimeoutError:
+                            pass
+                        if api_failures:
+                            raise _api_failure(api_failures)
+
+                    response = _goto_with_retries(
+                        page,
+                        url,
+                        before_navigation=api_failures.clear,
+                        after_navigation=wait_for_detail_data,
+                        wait_until="domcontentloaded",
+                        timeout=45000,
+                    )
                     if response is None or response.status != 200:
                         raise RuntimeError(f"HTTP durum kodu: {response.status if response else 'yanıt yok'}")
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=5000)
-                    except PlaywrightTimeoutError:
-                        # Some pages keep analytics connections open; visible content is still usable.
-                        pass
                     visible_text = page.locator("body").inner_text()
                     if not visible_text.strip():
                         raise RuntimeError("İlan detay sayfasında okunabilir metin bulunamadı.")
@@ -214,7 +283,8 @@ def scrape_public_listing_details(listings):
                     )
                     outcomes[url] = {"details": details, "error": None}
                 except Exception as error:
-                    outcomes[url] = {"details": {"source_text": ""}, "error": str(error)}
+                    failure = _api_failure(api_failures) if api_failures else error
+                    outcomes[url] = {"details": {"source_text": ""}, "error": str(failure)}
         finally:
             browser.close()
     return outcomes
@@ -234,23 +304,22 @@ def scrape_public_active_listings():
             for attempt in range(3):
                 page = browser.new_page(locale="tr-TR")
                 page.route("**/*", _block_document_requests)
+                api_failures = _watch_api_failures(page)
                 try:
                     response = page.goto(URL, wait_until="domcontentloaded", timeout=45000)
                     if response is None or response.status != 200:
                         raise RuntimeError(f"Kariyer Kapısı HTTP yanıtı: {response.status if response else 'yanıt yok'}")
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=8000)
-                    except PlaywrightTimeoutError:
-                        # Portal arka plan istekleri açık tutabilir; ilanların görünmesini yine de bekle.
-                        pass
+                    # Avoid networkidle: the portal keeps analytics/polling requests open.
                     page.wait_for_function("""() => {
                         const body = document.body?.innerText?.toLocaleLowerCase('tr-TR') || '';
                         const empty = body.includes('şu an aktif bir ilan bulunmamaktadır');
                         const hasListing = Array.from(document.querySelectorAll('a[href]'))
                           .some(anchor => /ilandetay/i.test(anchor.getAttribute('href') || ''));
                         return empty || hasListing;
-                    }""", timeout=18000)
+                    }""", timeout=30000)
                     body_text = page.locator("body").inner_text()
+                    if api_failures:
+                        raise _api_failure(api_failures)
                     if "şu an aktif bir ilan bulunmamaktadır" in body_text.casefold():
                         return []
                     raw_listings = page.locator("a[href]").evaluate_all("""
@@ -270,9 +339,11 @@ def scrape_public_active_listings():
                         raise RuntimeError("Kariyer Kapısı sayfası yüklendi ancak ilan satırları okunamadı.")
                     break
                 except Exception as error:
-                    last_error = error
-                    if attempt < 2:
+                    last_error = _api_failure(api_failures) if api_failures else error
+                    if attempt < 2 and _is_transient_navigation_error(last_error):
                         time.sleep(1.5 * (attempt + 1))
+                    else:
+                        break
                 finally:
                     page.close()
             if raw_listings is None:

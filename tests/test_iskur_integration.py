@@ -1,4 +1,7 @@
+from datetime import date
+
 import pytest
+
 from backend.sources import iskur
 from backend.sources.base import SourceFetchError
 
@@ -30,7 +33,7 @@ MOCK_CITY_HTML = """
         <td>Ankara Büyükşehir Belediyesi Memur Alımı</td>
     </tr>
     <tr class="clickable-row">
-        <td>15.12.2026</td>
+        <td>15/12/2026</td>
         <td><a href="/medya/67890/cankaya-zabita.pdf">Çankaya Belediyesi Zabıta Alımı</a></td>
     </tr>
 </table>
@@ -55,6 +58,10 @@ def test_iskur_discovers_active_cities_and_table_rows(monkeypatch):
     titles = [item["title"] for item in listings]
     assert "Ankara Büyükşehir Belediyesi Memur Alımı" in titles
     assert "Çankaya Belediyesi Zabıta Alımı" in titles
+    assert [item["application_end_date"] for item in listings] == [
+        date(2026, 12, 1),
+        date(2026, 12, 15),
+    ]
 
     for item in listings:
         assert item["source_key"] == "iskur"
@@ -82,3 +89,69 @@ def test_iskur_fetch_detail_for_pdf(monkeypatch):
     detail = source.fetch_detail("https://www.iskur.gov.tr/medya/12345/test.pdf")
     assert detail["detail_url"] == "https://www.iskur.gov.tr/medya/12345/test.pdf"
     assert "Örnek Memur Alımı Şartları" in detail["source_text"]
+
+
+def test_iskur_scanned_pdf_uses_ocr_when_text_extraction_fails(monkeypatch):
+    from backend import documents, ocr
+
+    source = iskur.IskurSource()
+    monkeypatch.setattr(
+        documents,
+        "fetch_url",
+        lambda _url, **_kwargs: {
+            "body": b"%PDF-1.4 scanned",
+            "content_type": "application/pdf",
+            "not_modified": False,
+        },
+    )
+
+    def no_text_layer(_url, _body, _content_type):
+        raise documents.DocumentParseError("PDF metin katmanı boş.")
+
+    monkeypatch.setattr(documents, "parse_document", no_text_layer)
+    monkeypatch.setattr(
+        ocr,
+        "ocr_pdf",
+        lambda _body: {
+            "text": "Başvurular 09/12/2026 - 11/12/2026 tarihleri arasında.",
+            "confidence": 0.94,
+            "pages": 1,
+            "truncated": False,
+        },
+    )
+
+    detail = source.fetch_detail("https://www.iskur.gov.tr/medya/12345/scanned.pdf")
+
+    assert "09/12/2026 - 11/12/2026" in detail["source_text"]
+    assert detail["document"]["parsed"]["ocr_confidence"] == 0.94
+    assert detail["document"]["parsed"]["partially_read"] is True
+
+
+def test_iskur_surfaces_reason_when_scanned_pdf_cannot_be_ocr_read(monkeypatch):
+    from backend import documents, ocr
+
+    source = iskur.IskurSource()
+    monkeypatch.setattr(
+        documents,
+        "fetch_url",
+        lambda _url, **_kwargs: {
+            "body": b"%PDF-1.4 scanned",
+            "content_type": "application/pdf",
+            "not_modified": False,
+        },
+    )
+    monkeypatch.setattr(
+        documents,
+        "parse_document",
+        lambda *_args: (_ for _ in ()).throw(
+            documents.DocumentParseError("PDF metin katmanı boş.")
+        ),
+    )
+    monkeypatch.setattr(
+        ocr,
+        "ocr_pdf",
+        lambda _body: (_ for _ in ()).throw(ocr.OcrUnavailable("OCR kapalı.")),
+    )
+
+    with pytest.raises(documents.ScannedDocumentError, match="OCR kapalı"):
+        source.fetch_detail("https://www.iskur.gov.tr/medya/12345/scanned.pdf")

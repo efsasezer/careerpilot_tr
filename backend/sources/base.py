@@ -86,13 +86,14 @@ def fetch_html(source_name: str, url: str, session: requests.Session | None = No
     client = session or requests
     response = None
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            response = client.get(url, timeout=(8, 30), headers=DEFAULT_HEADERS)
+            response = client.get(url, timeout=(15, 40), headers=DEFAULT_HEADERS)
             break
         except requests.RequestException as error:
             last_error = error
-            time.sleep(1.5 * (attempt + 1))
+            if attempt < 2:
+                time.sleep(1.0 * (attempt + 1))
     if response is None:
         raise SourceFetchError(source_name, url, str(last_error)) from last_error
     if response.status_code != 200:
@@ -133,6 +134,14 @@ class BaseJobSource(ABC):
     source_name: str = ""
     base_url: str = ""
     pages_checked: int = 0
+
+    def __init__(self) -> None:
+        self.fetch_warnings: list[str] = []
+
+    def add_fetch_warning(self, message: str) -> None:
+        if "fetch_warnings" not in self.__dict__:
+            self.fetch_warnings = []
+        self.fetch_warnings.append(str(message)[:400])
 
     @staticmethod
     def normalize_listing(raw: Dict[str, Any]) -> Dict[str, Any]:

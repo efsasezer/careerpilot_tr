@@ -153,38 +153,44 @@ class YerelYonetimlerSource(BaseJobSource):
         end = body_html.find("Duyurulara geri d")
         if end != -1:
             body_html = body_html[:end]
-        links, text = parse_html_page(body_html)
+        _, text = parse_html_page(body_html)
 
-        attachments = []
-        for link in links:
-            href = absolute_url(final_url, link["href"])
-            path = urlsplit(href).path.casefold()
-            if path.endswith((".pdf", ".docx")) and href not in attachments:
-                attachments.append(href)
-        attachment_error = ""
-        for attachment in attachments[:2]:
-            from ..documents import fetch_url
+        from ..documents import discover_document_links, fetch_url
+
+        attachments = discover_document_links(final_url, body_html)
+        document_texts = []
+        document = None
+        unread_attachments = []
+        for attachment in attachments:
             try:
-                response = fetch_url(attachment)
+                response = fetch_url(attachment["url"])
                 detail = self.document_detail(
-                    attachment, response["body"], response["content_type"], "Resmî ilan metni",
+                    attachment["url"],
+                    response["body"],
+                    response["content_type"],
+                    attachment["title"] or "Resmî ilan metni",
                 )
             except Exception as error:
-                # Belge okunamazsa sayfa metniyle devam edilir; bağlantı kullanıcıya gösterilir.
-                attachment_error = str(error)[:300]
+                unread_attachments.append({
+                    "url": attachment["url"],
+                    "title": attachment["title"] or "Resmî ilan metni (ek belge)",
+                    "error": str(error)[:300],
+                })
                 continue
-            detail["source_text"] = "\n".join(filter(None, (text, detail["source_text"])))
-            detail["detail_url"] = final_url
-            return detail
+            document_texts.append(detail["source_text"])
+            if document is None:
+                document = detail["document"]
 
-        if len(text) < 100:
+        source_text = "\n\n".join(filter(None, (text, *document_texts)))
+        if len(source_text) < 100:
             raise RuntimeError(f"Duyuru detayında ayrıştırılabilir metin yok: {final_url}")
-        return {
-            "source_text": text,
-            "content_hash": content_hash(text),
+        result = {
+            "source_text": source_text,
+            "content_hash": content_hash(source_text),
             "detail_url": final_url,
-            "unread_attachments": [
-                {"url": attachment, "title": "Resmî ilan metni (ek belge)", "error": attachment_error}
-                for attachment in attachments[:2]
-            ],
         }
+        if document is not None:
+            result["document"] = document
+        if unread_attachments:
+            result["unread_attachments"] = unread_attachments
+        return result
