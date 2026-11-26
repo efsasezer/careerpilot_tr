@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from . import clock
 from datetime import datetime, timedelta
 import hashlib
 import hmac
@@ -75,7 +76,7 @@ def _hash(session_id: str) -> str:
 def create_session(db: Session) -> str:
     """Yeni oturum açar ve çereze yazılacak imzalı değeri döndürür."""
     session_id = secrets.token_urlsafe(32)
-    now = datetime.now()
+    now = clock.now()
     db.execute(delete(UserSession).where(UserSession.expires_at < now))
     db.add(UserSession(token_hash=_hash(session_id), created_at=now, expires_at=now + timedelta(days=SESSION_DAYS)))
     db.commit()
@@ -98,7 +99,7 @@ def is_authenticated(db: Session, cookie_value: str | None) -> bool:
     if session_id is None:
         return False
     record = db.get(UserSession, _hash(session_id))
-    return record is not None and record.expires_at > datetime.now()
+    return record is not None and record.expires_at > clock.now()
 
 
 def destroy_session(db: Session, cookie_value: str | None) -> None:
@@ -109,7 +110,7 @@ def destroy_session(db: Session, cookie_value: str | None) -> None:
 
 
 def active_session_count(db: Session) -> int:
-    return len(db.scalars(select(UserSession.token_hash).where(UserSession.expires_at > datetime.now())).all())
+    return len(db.scalars(select(UserSession.token_hash).where(UserSession.expires_at > clock.now())).all())
 
 
 class LoginLimiter:

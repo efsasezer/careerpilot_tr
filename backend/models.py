@@ -233,6 +233,8 @@ class UserJobState(Base):
     # "" | saved | applied | awaiting | won | lost | hidden
     tracking: Mapped[str] = mapped_column(String(20), default="")
     notes: Mapped[str] = mapped_column(Text, default="")
+    # True ise bu ilan için hatırlatma ve bildirim üretilmez.
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
 
 

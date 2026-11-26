@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 
-from backend import main, migrate, sync  # noqa: E402
+from backend import clock, main, migrate, sync  # noqa: E402
 from backend.database import SessionLocal, engine  # noqa: E402
 from backend.models import Job, JobEvent, Notification, SourceListing, SourceSyncHistory, UserJobState, UserVerification  # noqa: E402
 
@@ -78,7 +78,7 @@ with SessionLocal() as db:
             raise AssertionError("ikinci tarama başlamamalıydı")
         except sync.ScanAlreadyRunning:
             pass
-        assert sync.acquire_scan_lock(other, "b", now=datetime.now() + sync.LOCK_LEASE + timedelta(minutes=1))
+        assert sync.acquire_scan_lock(other, "b", now=clock.now() + sync.LOCK_LEASE + timedelta(minutes=1))
         sync.release_scan_lock(other, "b")
 
 with TestClient(main.app) as client:

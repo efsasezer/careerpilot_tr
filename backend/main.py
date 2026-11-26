@@ -1,3 +1,4 @@
+from . import clock
 import json
 import logging
 import os
@@ -326,6 +327,8 @@ def _event_payload(event: JobEvent) -> dict:
         "user_edited": event.user_edited,
         "verified": event.verified,
         "previous_date": event.previous_date.isoformat() if event.previous_date else None,
+        "method": event.method or ("user" if event.source == "user" else ""),
+        "confidence": event.confidence or "",
     }
 
 
@@ -351,6 +354,7 @@ def job_detail(job_id: int, db: Session = Depends(get_db)):
         "document_review": first.get("document_review"),
         "tracking": first["tracking"],
         "notes": first["notes"],
+        "muted": bool((db.get(UserJobState, job_id) or UserJobState(muted=False)).muted),
         "has_pdf": _has_pdf(db, job),
         "events": [_event_payload(event) for event in events],
         "results": results.job_result_status(db, job, first["tracking"]),
@@ -427,15 +431,17 @@ def update_tracking(job_id: int, payload: TrackingUpdate, db: Session = Depends(
         raise HTTPException(status_code=404, detail="İlan bulunamadı")
     state = db.get(UserJobState, job_id)
     if state is None:
-        state = UserJobState(job_id=job_id, tracking="", notes="", updated_at=datetime.now())
+        state = UserJobState(job_id=job_id, tracking="", notes="", updated_at=clock.now())
         db.add(state)
     state.tracking = payload.tracking
     if payload.notes is not None:
         state.notes = payload.notes
-    state.updated_at = datetime.now()
+    if payload.muted is not None:
+        state.muted = payload.muted
+    state.updated_at = clock.now()
     db.commit()
     invalidate_cache()
-    return {"id": job_id, "tracking": state.tracking, "notes": state.notes}
+    return {"id": job_id, "tracking": state.tracking, "notes": state.notes, "muted": bool(state.muted)}
 
 
 @app.delete("/jobs/{job_id}")
@@ -475,12 +481,12 @@ def set_verification(job_id: int, payload: VerificationUpdate, db: Session = Dep
         UserVerification.job_id == job_id, UserVerification.position_id == payload.position_id,
     ))
     if record is None:
-        record = UserVerification(job_id=job_id, position_id=payload.position_id, decision=payload.decision, verified_at=datetime.now())
+        record = UserVerification(job_id=job_id, position_id=payload.position_id, decision=payload.decision, verified_at=clock.now())
         db.add(record)
     content_hash, snapshot = _content_version(db, job)
     record.decision = payload.decision
     record.note = payload.note
-    record.verified_at = datetime.now()
+    record.verified_at = clock.now()
     record.content_hash = content_hash
     record.content_snapshot = json.dumps(snapshot, ensure_ascii=False)
     record.job_updated_at = job.updated_at
@@ -621,7 +627,7 @@ def add_event(job_id: int, payload: EventUpdate, db: Session = Depends(get_db)):
         JobEvent.job_id == job_id, JobEvent.kind == payload.kind,
         JobEvent.event_date == payload.event_date, JobEvent.source == "user", JobEvent.deleted.is_(False),
     ).order_by(JobEvent.id.desc()).limit(1))
-    now = datetime.now()
+    now = clock.now()
     if event is None:
         event = JobEvent(job_id=job_id, kind=payload.kind, event_date=payload.event_date, source="user")
         db.add(event)
@@ -649,7 +655,7 @@ def edit_event(event_id: int, payload: EventUpdate, db: Session = Depends(get_db
     event.event_time, event.title, event.url = payload.event_time, payload.title, payload.url
     if payload.evidence:
         event.evidence = payload.evidence
-    event.user_edited, event.updated_at = True, datetime.now()  # yeniden taramada ezilmez
+    event.user_edited, event.updated_at = True, clock.now()  # yeniden taramada ezilmez
     if old_kind == "application_start":
         job.application_start = payload.event_date if payload.kind == old_kind else None
     if old_kind == "application_deadline":
@@ -673,7 +679,7 @@ def delete_event(event_id: int, db: Session = Depends(get_db)):
     if event.source == "user":
         db.delete(event)
     else:
-        event.deleted, event.user_edited, event.updated_at = True, True, datetime.now()  # tarama geri getirmesin
+        event.deleted, event.user_edited, event.updated_at = True, True, clock.now()  # tarama geri getirmesin
     if kind in ("application_start", "application_deadline"):
         latest = db.scalar(select(JobEvent.event_date).where(
             JobEvent.job_id == job.id, JobEvent.kind == kind, JobEvent.id != event_id,
@@ -695,7 +701,7 @@ def verify_event(event_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Olay bulunamadı")
     event.verified = True
     event.user_edited = True  # otomatik tarama kullanıcı tarafından incelenen tarihi değiştirmesin
-    event.updated_at = datetime.now()
+    event.updated_at = clock.now()
     db.commit()
     invalidate_cache()
     return _event_payload(event)
@@ -725,7 +731,7 @@ def list_tasks(db: Session = Depends(get_db)):
 
 @app.post("/tasks")
 def create_task(payload: TaskUpdate, db: Session = Depends(get_db)):
-    task = UserTask(title="", task_date=payload.task_date, created_at=datetime.now(), completed_dates="[]")
+    task = UserTask(title="", task_date=payload.task_date, created_at=clock.now(), completed_dates="[]")
     _apply_task(task, payload)
     db.add(task)
     db.commit()
@@ -824,7 +830,7 @@ def update_profile(payload: ProfileUpdate, db: Session = Depends(get_db), backgr
     profile.kpss_scores = json.dumps(scores, ensure_ascii=False)
     profile.kpss_score_type = primary
     profile.kpss_p3 = scores.get(primary)
-    profile.updated_at = datetime.now()
+    profile.updated_at = clock.now()
     db.commit()
     db.refresh(profile)
     invalidate_cache()
@@ -886,7 +892,7 @@ def list_notifications(
 
 @app.post("/notifications/read-all")
 def read_all_notifications(db: Session = Depends(get_db)):
-    db.execute(update(Notification).where(Notification.read_at.is_(None)).values(read_at=datetime.now()))
+    db.execute(update(Notification).where(Notification.read_at.is_(None)).values(read_at=clock.now()))
     db.commit()
     return {"unread": 0}
 
@@ -910,7 +916,7 @@ def read_notification(notification_id: int, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Bildirim bulunamadı")
     if item.read_at is None:
-        item.read_at = datetime.now()
+        item.read_at = clock.now()
         db.commit()
     return _notification_payload(item)
 
@@ -947,7 +953,7 @@ def list_sources(db: Session = Depends(get_db)):
         if primary is not None and len(primary.description or "") >= 400:
             for member in members:
                 readable_sibling[member.id] = primary.source_name
-    now = datetime.now()
+    now = clock.now()
     for info in SOURCES_STATUS.values():
         job_count = db.scalar(select(func.count(Job.id)).where(
             Job.source_name == info["name"], Job.archived_reason == "",
@@ -1072,8 +1078,8 @@ def public_summary(db: Session = Depends(get_db)):
     jobs = list(db.scalars(
         select(Job).where(Job.sector == "public", Job.archived_reason == "").order_by(Job.created_at.desc(), Job.id.desc())
     ).all())
-    today = date.today()
-    recent_cutoff = datetime.now() - timedelta(days=7)
+    today = clock.today()
+    recent_cutoff = clock.now() - timedelta(days=7)
     open_count = upcoming_count = recent_count = 0
     latest = []
     for job in jobs:
@@ -1129,7 +1135,7 @@ def public_listings(
         stmt = stmt.where(
             Job.title.ilike(term) | Job.organization.ilike(term) | Job.city.ilike(term) | Job.description.ilike(term)
         )
-    today = date.today()
+    today = clock.today()
     matching = []
     for job in db.scalars(stmt).all():
         application_status = public_application_status(job.application_start, job.application_deadline, today)
@@ -1217,12 +1223,12 @@ def set_result_source(job_id: int, payload: _ResultSource, db: Session = Depends
 def check_job_results(job_id: int, db: Session = Depends(get_db)):
     """Tek ilanın sonuç duyurularını hemen kontrol eder."""
     job = _public_job(db, job_id)
-    entries = results.tracked_jobs(db, date.today())
+    entries = results.tracked_jobs(db, clock.today())
     entry = next((item for item in entries if item["job"].id == job_id), None)
     if entry is None:
         entry = {"job": job, "family": [job], "tracking": "", "priority": 0}
     peers = [item for item in entries if item["job"].organization == job.organization]
-    results.check_job(db, entry, results.SiteReader(), peers, date.today())
+    results.check_job(db, entry, results.SiteReader(), peers, clock.today())
     db.commit()
     background_refresh = process_notifications(db)
     state = db.get(UserJobState, job_id)

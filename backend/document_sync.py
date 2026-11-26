@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from . import clock
 import argparse
 from datetime import datetime
 from hashlib import sha256
@@ -140,7 +141,7 @@ def _sync_document(
             last_modified=document.last_modified or None,
         )
         if response["not_modified"]:
-            document.checked_at = datetime.now()
+            document.checked_at = clock.now()
             if document.parsed_content_hash:
                 document.status = "partially_read" if document.error else "read"
             report["unchanged"] += 1
@@ -151,7 +152,7 @@ def _sync_document(
         document.content_type = str(response["content_type"] or "")[:200]
         document.etag = str(response["etag"] or "")[:500]
         document.last_modified = str(response["last_modified"] or "")[:200]
-        document.checked_at = datetime.now()
+        document.checked_at = clock.now()
         document.content_hash = current_hash
         if current_hash == document.content_hash and document.parsed_content_hash == current_hash:
             document.status = "read"
@@ -177,14 +178,14 @@ def _sync_document(
     except DocumentParseError as error:
         document.status = "unreadable"
         document.error = str(error)
-        document.checked_at = datetime.now()
+        document.checked_at = clock.now()
         report["errors"] += 1
         report["details"].append({"job_id": job.id, "url": url, "error": str(error)})
         logger.warning("Official attachment could not be parsed for job %s: %s", job.id, error)
     except DocumentFetchError as error:
         document.status = "unavailable"
         document.error = str(error)
-        document.checked_at = datetime.now()
+        document.checked_at = clock.now()
         report["errors"] += 1
         report["details"].append({"job_id": job.id, "url": url, "error": str(error)})
         logger.warning("Official attachment could not be fetched for job %s: %s", job.id, error)
@@ -197,7 +198,7 @@ def sync_job_documents(
     browser_outcome: dict | None = None,
 ) -> dict:
     scan = _scan_record(db, job.id)
-    checked_at = datetime.now()
+    checked_at = clock.now()
     report = {
         "job_id": job.id,
         "status": "complete",

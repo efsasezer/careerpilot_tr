@@ -11,6 +11,7 @@ Kurallar:
 - Sonuç bir ön elemedir; başvuru/atama garantisi vermez.
 """
 
+from . import clock
 from datetime import date
 import json
 import re
@@ -272,7 +273,7 @@ def detect_recruitment_method(title: str, description: str) -> str:
 def detect_application_status(start_date: date | None, end_date: date | None, today: date | None = None) -> str:
     """Eldeki tarihlerin desteklediği başvuru durumunu döndürür."""
     if today is None:
-        today = date.today()
+        today = clock.today()
     if end_date and end_date < today:
         return "Başvuru Sona Erdi"
     if start_date and start_date > today:
@@ -606,7 +607,7 @@ def classify_public_job(job, candidate):
         {"met": reasons, "not_met": mismatches, "unknown": unknowns}[status].append(detail)
 
     education_quote = " ".join(education_evidence)[:420]
-    reference_date = _job_value(job, "reference_date", None) or date.today()
+    reference_date = _job_value(job, "reference_date", None) or clock.today()
 
     academic = is_academic_listing(title, position)
     special = _special_group(title, description)
@@ -825,7 +826,7 @@ def _parse_month(value):
 
 
 def _assess_other_requirements(candidate, description, mandatory, normalized_text, add, reference_date=None):
-    reference_date = reference_date or date.today()
+    reference_date = reference_date or clock.today()
 
     def first(predicate):
         return next((sentence for sentence, normalized in mandatory if predicate(normalized)), "")

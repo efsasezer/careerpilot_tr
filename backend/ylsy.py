@@ -8,6 +8,7 @@ duyurunun ayrıntı sayfası ve ekleri okunur. Başvuru kılavuzu ve tercih tabl
 
 from __future__ import annotations
 
+from . import clock
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
 import html as html_lib
@@ -282,7 +283,7 @@ def _store(db: Session, url: str, fallback_title: str, fallback_date: date | Non
     row = Announcement(
         topic=TOPIC, url=url[:1200], title=title[:500], category=category, published_date=detail["date"],
         source=SOURCE_NAME, summary=detail["text"], attachments=json.dumps(detail["attachments"], ensure_ascii=False),
-        facts=json.dumps(facts, ensure_ascii=False), first_seen_at=datetime.now(),
+        facts=json.dumps(facts, ensure_ascii=False), first_seen_at=clock.now(),
     )
     db.add(row)
     db.commit()
@@ -293,7 +294,7 @@ def sync_ylsy(db: Session, fetch=_get) -> dict:
     """Resmî duyuru akışını kontrol eder; yeni YLSY/1416 duyurularını ekler. Aynı duyuru iki kez eklenmez."""
     from .models import AppSetting
 
-    report = {"status": "ok", "new": 0, "checked_at": datetime.now().isoformat(timespec="seconds"), "error": None}
+    report = {"status": "ok", "new": 0, "checked_at": clock.now().isoformat(timespec="seconds"), "error": None}
     known = set(db.scalars(select(Announcement.url).where(Announcement.topic == TOPIC)).all())
     first_run = not known  # ilk kurulumda bulunan eski duyurular bildirim üretmez
     try:
@@ -356,7 +357,7 @@ def candidate_codes(codes: dict[str, str], department: str, aliases: str = "") -
 
 def assess(profile, guide: Announcement | None, today: date | None = None) -> dict:
     """Adayın en son yayımlanan kılavuza göre durumu. Puan türü doğrulanmadan karar verilmez."""
-    today = today or date.today()
+    today = today or clock.today()
     if guide is None:
         return {"available": False, "message": "Resmî başvuru kılavuzu henüz okunamadı; şartlar kılavuz okunduğunda gösterilecek."}
     facts = _load(guide, "facts", {})
@@ -468,7 +469,7 @@ def announcement_payload(row: Announcement) -> dict:
 def overview(db: Session, profile, today: date | None = None) -> dict:
     from .models import AppSetting
 
-    today = today or date.today()
+    today = today or clock.today()
     rows = db.scalars(select(Announcement).where(Announcement.topic == TOPIC)).all()
     rows = sorted(rows, key=lambda row: (row.published_date or row.first_seen_at.date(), row.id), reverse=True)
     guides = [row for row in rows if row.category == "guide" and _load(row, "facts", {}).get("ales_min")]

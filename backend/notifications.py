@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import clock
 from datetime import datetime
 from email.message import EmailMessage
 import json
@@ -80,13 +81,16 @@ def generate_notifications(db: Session, matches: dict | None = None, settings: N
         existing.add(key)
         record = Notification(
             kind=kind, dedupe_key=key, job_id=summary["job_id"], category=summary["category"],
-            title=title[:400], body=body, created_at=datetime.now(),
+            title=title[:400], body=body, created_at=clock.now(),
         )
         db.add(record)
         created.append(record)
 
+    muted = _muted_job_ids(db)
     for summary in job_summaries(matches):
         if summary["tracking"] == "hidden" or summary["application_status"] in ("Başvuru Sona Erdi", "İptal Edildi"):
+            continue
+        if summary["job_id"] in muted:
             continue
         category = summary["category"]
         if category not in settings.notify_categories:
@@ -116,7 +120,7 @@ def generate_notifications(db: Session, matches: dict | None = None, settings: N
 
         days_left = summary["days_left"]
         if (
-            settings.deadline_reminder_days
+            settings.deadline_reminder_days and settings.remind_deadline
             and summary["application_status"] == "Başvuru Açık"
             and summary["tracking"] not in ("applied", "awaiting", "won", "lost")
             and days_left is not None
@@ -131,11 +135,26 @@ def generate_notifications(db: Session, matches: dict | None = None, settings: N
                 f"{summary['title']} — {_format_deadline(summary['application_deadline'])}.",
             )
 
-    _result_notifications(db, {item["job_id"]: item for item in job_summaries(matches)}, add)
-    _announcement_notifications(db, existing, created)
+    if settings.notify_results:
+        _result_notifications(db, {item["job_id"]: item for item in job_summaries(matches) if item["job_id"] not in muted}, add)
+    if settings.notify_announcements:
+        _announcement_notifications(db, existing, created)
     if created:
         db.commit()
     return created
+
+
+def _muted_job_ids(db: Session) -> set[int]:
+    from .models import UserJobState
+
+    return set(db.scalars(select(UserJobState.job_id).where(UserJobState.muted.is_(True))).all())
+
+
+# Olay türü → hangi tercih anahtarı açıkken hatırlatılır
+_REMINDER_SETTING = {
+    "application_start": "remind_application_start", "application_deadline": "remind_deadline",
+    "exam": "remind_exam", "interview": "remind_exam", "result": "remind_result",
+}
 
 
 def _result_notifications(db: Session, summaries: dict, add) -> None:
@@ -168,7 +187,7 @@ def _announcement_notifications(db: Session, existing: set, created: list) -> No
         when = f" ({row.published_date:%d.%m.%Y})" if row.published_date else ""
         record = Notification(
             kind="announcement", dedupe_key=key, job_id=None, category="",
-            title=f"Yeni YLSY / 1416 duyurusu{when}"[:400], body=f"{row.title} · {row.url}", created_at=datetime.now(),
+            title=f"Yeni YLSY / 1416 duyurusu{when}"[:400], body=f"{row.title} · {row.url}", created_at=clock.now(),
         )
         db.add(record)
         created.append(record)
@@ -266,7 +285,7 @@ def deliver_pending(db: Session, settings: NotificationSettings | None = None) -
     results = send_to_channels(settings, subject, body)
     # Bir kanal hata verdiyse sonraki taramada yeniden denenir.
     if "skipped" not in results and all(value == "ok" for value in results.values()):
-        now = datetime.now()
+        now = clock.now()
         for item in pending:
             item.delivered_at = now
         db.commit()
@@ -283,7 +302,9 @@ def refresh_daily(db: Session, today=None) -> int:
 
     today = today or date_type.today()
     tomorrow = today + timedelta(days=1)
-    reminder_days = load_settings(db).deadline_reminder_days
+    settings = load_settings(db)
+    reminder_days = settings.deadline_reminder_days
+    muted = _muted_job_ids(db)
     reminder_end = today + timedelta(days=reminder_days)
     summaries = {item["job_id"]: item for item in job_summaries(build_matches(db, full=False, today=today))}
     existing = set(db.scalars(select(Notification.dedupe_key)).all())
@@ -295,7 +316,7 @@ def refresh_daily(db: Session, today=None) -> int:
             return
         existing.add(key)
         db.add(Notification(kind=kind, dedupe_key=key, job_id=job_id, category=category, title=title[:400], body=body,
-                            created_at=datetime.now(), delivered_at=datetime.now()))
+                            created_at=clock.now(), delivered_at=clock.now()))
         created += 1
 
     def relevant(summary) -> bool:
@@ -309,7 +330,9 @@ def refresh_daily(db: Session, today=None) -> int:
     )).all()
     for event in events:
         summary = summaries.get(event.job_id)
-        if not relevant(summary):
+        if not relevant(summary) or event.job_id in muted:
+            continue
+        if not getattr(settings, _REMINDER_SETTING.get(event.kind, "remind_other")):
             continue
         applied = summary["tracking"] in ("applied", "awaiting", "won", "lost")
         label = event.title or EVENT_LABELS.get(event.kind, "Olay")
@@ -324,7 +347,7 @@ def refresh_daily(db: Session, today=None) -> int:
         elif event.event_date == today:
             add("event", f"day:{event.id}:{event.event_date}", event.job_id, summary["category"], f"Bugün: {label} — {summary['organization']}",
                 name + (f" ({event.url})" if event.url else ""))
-        elif reminder_days and event.kind in ("application_start", "exam", "interview", "result", "documents", "appointment"):
+        elif reminder_days and event.kind in ("application_start", "exam", "interview", "result", "documents", "appointment", "start_work"):
             days_left = (event.event_date - today).days
             add("event_upcoming", f"event:{event.id}:{event.event_date}", event.job_id, summary["category"],
                 f"Yaklaşan etkinlik ({days_left} gün): {label} — {summary['organization']}",

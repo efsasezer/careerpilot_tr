@@ -44,6 +44,8 @@ class BulkJobCreate(BaseModel):
 class TrackingUpdate(BaseModel):
     tracking: str = Field(default="", pattern="^(|saved|applied|awaiting|won|lost|hidden)$")
     notes: str | None = Field(default=None, max_length=5000)
+    # Bu ilanın hatırlatma ve bildirimlerini kapatır/açar (None: değiştirme).
+    muted: bool | None = None
 
 
 class ProfileUpdate(BaseModel):
@@ -109,6 +111,14 @@ class NotificationSettings(BaseModel):
     notify_categories: list[str] = ["UYGUN", "POTANSİYEL OLARAK UYGUN"]
     only_preferred_locations: bool = False
     deadline_reminder_days: int = Field(default=3, ge=0, le=30)
+    # Hangi hatırlatmaların üretileceği (kullanıcı Ayarlar'dan açıp kapatır).
+    remind_application_start: bool = True
+    remind_deadline: bool = True
+    remind_exam: bool = True
+    remind_result: bool = True
+    remind_other: bool = True
+    notify_results: bool = True
+    notify_announcements: bool = True
     email_enabled: bool = False
     email_to: str = Field(default="", max_length=200)
     telegram_enabled: bool = False
@@ -140,7 +150,7 @@ class VerificationUpdate(BaseModel):
 
 
 class EventUpdate(BaseModel):
-    kind: str = Field(pattern="^(application_start|application_deadline|exam|interview|result|documents|appointment)$")
+    kind: str = Field(pattern="^(application_start|application_deadline|exam|interview|result|documents|appointment|start_work)$")
     event_date: date
     end_date: date | None = None
     event_time: str = Field(default="", pattern="^(|([01][0-9]|2[0-3]):[0-5][0-9])$")
