@@ -10,10 +10,6 @@ on:
         description: "Deneme çalıştırması: veritabanını kaydetme, bildirim gönderme"
         type: boolean
         default: true
-      yalniz_tanilama:
-        description: "Yalnızca kaynak erişim tanılaması (tarama yapma)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -42,12 +38,8 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: Kaynak erişim tanılaması
-        run: python -m backend.diagnose | tee -a "$GITHUB_STEP_SUMMARY"
-
       - name: Kaynakları tara
         id: scan
-        if: inputs.yalniz_tanilama != true
         env:
           CAREERPILOT_SOURCE_REQUEST_DELAY_SECONDS: "1"
           CAREERPILOT_APP_URL: ${{ vars.CAREERPILOT_APP_URL || 'https://careerpilot-tr-web.onrender.com' }}
