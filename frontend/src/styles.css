@@ -473,3 +473,5 @@ fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
 .announcement-list > li { padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .announcement-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--ink-3); font-size: .86rem; }
 .plain-list { display: grid; gap: 8px; margin: 0 0 14px; padding-left: 18px; color: var(--ink-2); font-size: .93rem; }
+.diagnose-panel { margin-bottom: 20px; }
+.diagnose-panel h2 { font-size: 1rem; }

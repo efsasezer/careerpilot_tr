@@ -161,6 +161,9 @@ export interface JobEvent {
   user_edited: boolean;
   verified: boolean;
   previous_date: string | null;
+  /** Tarihin nasıl bulunduğu: listing | label | sentence | user */
+  method?: string;
+  confidence?: string;
 }
 
 export interface CalendarEvent extends JobEvent {
@@ -229,6 +232,7 @@ export interface JobDetail {
   notes: string;
   has_pdf: boolean;
   events: JobEvent[];
+  muted: boolean;
   results: ResultStatus;
   account_records: AccountRecord[];
   job_verification: Verification | null;
@@ -251,6 +255,37 @@ export interface Source {
   last_detail_failed: number;
   pages_checked: number;
   last_error: string | null;
+  error_kind: string | null;
+  error_kind_label: string | null;
+  last_origin: string | null;
+  last_success_origin: string | null;
+  days_since_success: number | null;
+  stale: boolean;
+  access_hint: string | null;
+  read_from_other_source: number;
+}
+
+export interface StorageStatus { backend: string; durable: boolean; warning: string | null }
+
+export interface SystemStatus {
+  storage: StorageStatus;
+  scan_origin: string;
+  auto_scan_hours: number | null;
+  last_scan_at: string | null;
+  ocr_enabled: boolean;
+  timezone: string;
+}
+
+export interface DiagnoseReport {
+  location: { country: string; colo: string };
+  origin: string;
+  storage: StorageStatus;
+  browser: { ok: boolean; detail: string };
+  targets: Array<{
+    name: string; url: string; host: string; verdict: string;
+    dns?: { ok: boolean; seconds: number }; tcp?: { ok: boolean; seconds: number }; tls?: { ok: boolean; seconds: number };
+    http?: { ok: boolean; seconds: number; status?: number };
+  }>;
 }
 
 export interface SyncStatus {
@@ -288,6 +323,13 @@ export interface NotificationSettings {
   notify_categories: MatchCategory[];
   only_preferred_locations: boolean;
   deadline_reminder_days: number;
+  remind_application_start: boolean;
+  remind_deadline: boolean;
+  remind_exam: boolean;
+  remind_result: boolean;
+  remind_other: boolean;
+  notify_results: boolean;
+  notify_announcements: boolean;
   email_enabled: boolean;
   email_to: string;
   telegram_enabled: boolean;

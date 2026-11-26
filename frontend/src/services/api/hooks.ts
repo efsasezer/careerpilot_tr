@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiRequest } from "./client";
 import { useAuth } from "./auth";
 import type {
-  AccountOverview, CalendarData, EventInput, JobDetail, ResultsOverview, YlsyOverview, MatchResponse, NotificationList, NotificationSettings,
+  AccountOverview, DiagnoseReport, SystemStatus, CalendarData, EventInput, JobDetail, ResultsOverview, YlsyOverview, MatchResponse, NotificationList, NotificationSettings,
   Profile, ProfileUpdate, Source, SyncStatus, Task, TaskInput, Tracking, Verification,
 } from "../../types/api";
 
@@ -64,7 +64,7 @@ export const useUpdateProfile = () =>
 export const useStartSync = () =>
   useApiMutation<void, SyncStatus>(() => ({ path: "/sync", method: "POST" }), ["sync-status"]);
 export const useSetTracking = () =>
-  useApiMutation<{ jobId: number; tracking: Tracking; notes?: string }, unknown>(
+  useApiMutation<{ jobId: number; tracking: Tracking; notes?: string; muted?: boolean }, unknown>(
     ({ jobId, ...body }) => ({ path: `/jobs/${jobId}/tracking`, method: "PATCH", body }), JOB_KEYS,
   );
 interface VerificationInput { jobId: number; decision: "eligible" | "not_eligible"; position_id?: string; note?: string }
@@ -169,3 +169,7 @@ export const useYlsySync = () =>
   useApiMutation<void, unknown>(() => ({ path: "/ylsy/sync", method: "POST" }), ["ylsy", "notifications", "calendar"]);
 export const useAccountImport = () =>
   useApiMutation<void, unknown>(() => ({ path: "/account/kariyer-kapisi/import", method: "POST" }), ["account"]);
+
+export const useSystemStatus = () => useApiQuery<SystemStatus>("system-status", "/system/status");
+export const useDiagnose = () =>
+  useApiMutation<void, DiagnoseReport>(() => ({ path: "/sources/diagnose", method: "POST" }), []);

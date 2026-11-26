@@ -146,7 +146,11 @@ def verified_intermediates(leaf_der: bytes, *, download=_download_issuer, roots=
 
     now = now or datetime.now(timezone.utc)
     if roots is None:
-        roots = x509.load_pem_x509_certificates(open(certifi.where(), "rb").read())
+        import warnings
+
+        with warnings.catch_warnings():  # certifi'deki eski bir kökün seri numarası uyarı üretir
+            warnings.simplefilter("ignore")
+            roots = x509.load_pem_x509_certificates(open(certifi.where(), "rb").read())
     current = x509.load_der_x509_certificate(leaf_der)
     chain = []
     for _ in range(MAX_INTERMEDIATES):

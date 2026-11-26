@@ -4,7 +4,10 @@ services:
     runtime: python
     plan: free
     rootDir: .
-    buildCommand: pip install -r requirements.txt
+    # Kariyer Kapısı ve İlan.gov.tr taraması Chromium gerektirir. Tarayıcının bu sunucuda açılıp
+    # açılmadığı Kaynaklar › "Erişim testi" ile görülür; açılmıyorsa depodaki Dockerfile ile
+    # Docker tabanlı bir servis kullanılmalıdır (bkz. README_TR.md › Render).
+    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
     healthCheckPath: /health
     autoDeploy: false
@@ -17,6 +20,20 @@ services:
       # Oturum imzalama anahtarı: Render üretir.
       - key: CAREERPILOT_SESSION_SECRET
         generateValue: true
+      # Kalıcı PostgreSQL adresi (Neon, Supabase ya da ücretli Render Postgres). Panelden elle girilir.
+      # Tanımlı değilse uygulama depodaki SQLite dosyasıyla açılır ve "veriler kalıcı değil" uyarısı gösterir.
+      - key: DATABASE_URL
+        sync: false
+      # Boş PostgreSQL veritabanını ilk açılışta depodaki son ilan verisiyle (doğrulamalı) doldurur.
+      - key: CAREERPILOT_DB_SEED_FROM_REPO
+        value: "true"
+      # Otomatik tarama: son taramadan 6 saat geçtiyse servis kendisi tarar (aynı anda tek tarama).
+      - key: CAREERPILOT_SYNC_INTERVAL_HOURS
+        value: "6"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/src/.playwright-browsers
+      - key: CAREERPILOT_APP_URL
+        value: https://careerpilot-tr-web.onrender.com
   - type: web
     name: careerpilot-tr-web
     runtime: static

@@ -1003,7 +1003,12 @@ def list_sources(db: Session = Depends(get_db)):
             .where(SourceSyncHistory.source_name == info["name"], SourceSyncHistory.status.in_(("ok", "partial", "warning")))
             .order_by(SourceSyncHistory.checked_at.desc(), SourceSyncHistory.id.desc()).limit(1)
         )
+        # Başka bir ortamdaki tarayıcı kaynağı yakın zamanda başarıyla taradıysa veri günceldir;
+        # bu sunucudaki son deneme hata verse bile kaynak "çalışmıyor" sayılmaz.
+        recently_ok = last_success_row is not None and (now - last_success_row.checked_at).total_seconds() < 36 * 3600
         failing = history is not None and history.status == "error"
+        if failing and recently_ok:
+            source_status = "Aktif"
         kind = (history.error_kind if history else "") or ""
         days_stale = (now - last_success_row.checked_at).days if last_success_row else None
         hint = None
@@ -1036,7 +1041,8 @@ def list_sources(db: Session = Depends(get_db)):
             "last_unchanged": history.unchanged if history else 0,
             "last_detail_failed": unresolved_failed,
             "pages_checked": history.pages_checked if history else 0,
-            "last_error": (history.error or None) if history and (history.status != "partial" or unresolved_failed) else None,
+            "last_error": (history.error or None) if history and (history.status != "partial" or unresolved_failed)
+            and not (failing and recently_ok) else None,
             "failed_items": failed_items,
         })
     return sources_data

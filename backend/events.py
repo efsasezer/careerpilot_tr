@@ -70,6 +70,7 @@ _URL = re.compile(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:gov|
 _IGNORED_CONTEXT = (
     "sayili", "resmi gazete", "dogmus", "dogumlu", "yasini", "yas sarti", "kanun", "yonetmelik",
     "itibariyla gecerli", "tarihinden once", "mezun ol", "kpss sonuc belgesi", "yilinda yapilan",
+    "ucretini", "ucreti ", "ucretinin",  # sınav ücreti ödeme tarihleri sınav tarihi değildir
 )
 
 

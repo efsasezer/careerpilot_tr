@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { JobDrawer } from "../jobs/JobDrawer";
-import { useMatches, useNotifications, useSyncStatus } from "../../services/api/hooks";
+import { useMatches, useNotifications, useSyncStatus, useSystemStatus } from "../../services/api/hooks";
 
 const navigation = [
   { to: "/", label: "Özet", icon: LayoutDashboard, end: true },
@@ -30,6 +30,7 @@ export function AppLayout({ children, onLogout }: { children: ReactNode; onLogou
   }
   const notifications = useNotifications();
   const sync = useSyncStatus();
+  const system = useSystemStatus();
   const queryClient = useQueryClient();
   const unread = notifications.data?.unread ?? 0;
   const running = sync.data?.running ?? false;
@@ -93,7 +94,10 @@ export function AppLayout({ children, onLogout }: { children: ReactNode; onLogou
             {unread > 0 && <span className="bell-dot" />}
           </NavLink>
         </header>
-        <main className="content">{children}</main>
+        <main className="content">
+          {system.data?.storage.warning && <p className="notice notice-bad" role="alert">{system.data.storage.warning}</p>}
+          {children}
+        </main>
       </div>
       <JobDrawer />
     </div>

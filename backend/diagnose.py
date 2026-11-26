@@ -95,7 +95,8 @@ def probe(name: str, url: str) -> dict:
     elif http["status"] >= 500:
         result["verdict"] = f"HTTP {http['status']}: kaynak sunucusunda hata"
     elif http["status"] != 200:
-        result["verdict"] = f"HTTP {http['status']}"
+        # Servis adresinin kök yolu yoksa 404 döner; sunucuya ulaşıldığı için erişim vardır.
+        result["verdict"] = "Erişilebilir (kök adres yok)" if http["status"] == 404 and urlsplit(url).path in ("", "/") else f"HTTP {http['status']}"
     elif http["blocked_marker"]:
         result["verdict"] = "HTTP 200 ama içerik bir erişim engeli sayfası"
     else:
@@ -113,12 +114,35 @@ def outbound_location() -> dict:
         return {"country": "?", "colo": "?"}
 
 
+def browser_check() -> dict:
+    """Kariyer Kapısı ve İlan.gov.tr için gereken tarayıcının (Chromium) bu ortamda açılıp açılmadığı."""
+    try:
+        from .kariyerkapisi import _playwright_event_loop_policy, sync_playwright
+
+        with _playwright_event_loop_policy(), sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                version = browser.version
+            finally:
+                browser.close()
+        return {"ok": True, "detail": f"Chromium {version}"}
+    except Exception as error:
+        return {"ok": False, "detail": f"{type(error).__name__}: {str(error).splitlines()[0][:200]}"}
+
+
 def run() -> dict:
-    return {"location": outbound_location(), "targets": [probe(name, url) for name, url in TARGETS]}
+    from . import config, database
+
+    return {
+        "location": outbound_location(), "origin": config.scan_origin(), "storage": database.storage_status(),
+        "browser": browser_check(), "targets": [probe(name, url) for name, url in TARGETS],
+    }
 
 
 def markdown(report: dict) -> str:
-    lines = [f"Çıkış ülkesi: **{report['location']['country']}** ({report['location']['colo']})", "",
+    lines = [f"Ortam: {report.get('origin', '?')} · çıkış ülkesi: **{report['location']['country']}** ({report['location']['colo']})",
+             f"Tarayıcı (Chromium): {'çalışıyor' if report['browser']['ok'] else 'ÇALIŞMIYOR'} — {report['browser']['detail']}",
+             f"Veritabanı: {report['storage']['backend']} · kalıcı: {'evet' if report['storage']['durable'] else 'HAYIR'}", "",
              "| Kaynak | DNS | TCP | TLS | HTTP | Sonuç |", "|---|---|---|---|---|---|"]
 
     def cell(part: dict | None, ok_text: str = "tamam") -> str:
