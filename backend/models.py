@@ -149,6 +149,8 @@ class CandidateProfile(Base):
     kpss_p3: Mapped[float | None] = mapped_column(Float, nullable=True)
     # {"P3": 87.6, "P93": 81.2} biçiminde tüm KPSS puanları (JSON)
     kpss_scores: Mapped[str] = mapped_column(Text, default="{}")
+    # KPSS'ye girilen yıl; ilan belirli bir yılın sonucunu istiyorsa karşılaştırılır.
+    kpss_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     faculty: Mapped[str] = mapped_column(String(200), default="")
     gender: Mapped[str] = mapped_column(String(10), default="")  # "" | Kadın | Erkek
     # Özel statü: "engelli", "eski hükümlü" (virgülle ayrılmış)
@@ -247,7 +249,7 @@ class UserVerification(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_id: Mapped[int] = mapped_column(Integer, index=True)
     position_id: Mapped[str] = mapped_column(String(120), default="")  # "" = ilanın tamamı
-    decision: Mapped[str] = mapped_column(String(20))  # eligible | not_eligible
+    decision: Mapped[str] = mapped_column(String(20))  # eligible | unsure | not_eligible
     note: Mapped[str] = mapped_column(Text, default="")
     verified_at: Mapped[datetime] = mapped_column(DateTime)
     # Karar verildiği andaki ilan içeriği (metin, kadro tablosu, tarihler)

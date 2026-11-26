@@ -87,40 +87,70 @@ ulaşır. Giriş, `.env` dosyasındaki `CAREERPILOT_PASSWORD` ile yapılır.
 
 ## Veritabanı
 
-Mevcut SQLite dosyası kullanılır: varsayılan yol proje kökündeki `careerpilot.db`
-(`DATABASE_URL` ile değiştirilebilir). Şema değişikliğinden önce dosyanın yanına
-`careerpilot.db.backup.<zaman>` adıyla yedek alınır.
+Üretimde **PostgreSQL** kullanılır (`DATABASE_URL`). Gerekçe: Render'ın ücretsiz servisinde dosya sistemi her
+yeniden başlatmada sıfırlanır, yani SQLite dosyasındaki profil, kayıtlar ve notlar kalıcı değildir; ayrıca web
+servisi ile başka bir ortamdaki tarayıcının aynı veriye aynı anda yazabilmesi gerekir. Yerel geliştirmede
+`DATABASE_URL` tanımlı değilse proje kökündeki `careerpilot.db` (SQLite) kullanılır.
 
-Kullanıcı verisi ilan tablolarından ayrıdır ve tarama bu tablolara dokunmaz:
-`candidate_profile`, `user_job_state` (kaydet/başvuru/notlar), `user_verifications`
-(elle doğrulamalar), `user_tasks`, `user_sessions`, `app_settings`, kullanıcının düzenlediği
-`job_events` kayıtları.
+- **Sağlayıcı.** Herhangi bir PostgreSQL olur. Render'ın *ücretsiz* Postgres'i oluşturulduktan 30 gün sonra
+  silinir; kalıcı veri için ücretli Render Postgres ya da ücretsiz katmanı süresiz olan bir sağlayıcı (ör. Neon,
+  Supabase) kullanın. Adres `postgres://…` ya da `postgresql://…` biçiminde verilebilir.
+- **Şema göçü.** Uygulama her açılışta `backend/migrate.py` çalıştırır: yalnızca eksik tablo, sütun ve indeks
+  eklenir; hiçbir şey silinmez; kaç kez çalışırsa çalışsın sonuç aynıdır. SQLite'ta şema değişmeden önce dosyanın
+  yedeği alınır. Uygulanan sürüm `schema_migrations` tablosundadır.
+- **İlk veri.** `CAREERPILOT_DB_SEED_FROM_REPO=true` iken boş PostgreSQL veritabanı, depodaki `careerpilot.db`
+  dosyasından bir kez doldurulur. Aktarım tek işlemdir ve satır sayıları ile içerik özeti kaynağınkiyle aynı
+  değilse geri alınır. Dolu veritabanına dokunulmaz.
+- **Yedek ve geri yükleme.**
+
+  ```bash
+  python -m backend.dbtools check                                  # taşma ve sahipsiz kayıt denetimi
+  python -m backend.dbtools backup --out yedek.json.gz             # DATABASE_URL'deki veritabanını yedekler
+  python -m backend.dbtools restore --in yedek.json.gz --url HEDEF # yalnızca BOŞ hedefe, doğrulamalı
+  python -m backend.dbtools copy --from sqlite:///careerpilot.db --to postgresql://…
+  ```
+
+  Bu komutlar kaynağı yalnızca okur ve dolu bir hedefin üzerine yazmaz.
+- **Tablolar.** İlan verisi (`jobs`, `source_listings`, `job_documents`, `document_positions`), tarama geçmişi
+  (`source_sync_history`, `scan_locks`), tarihler (`job_events`), sonuç takibi (`result_*`), duyurular
+  (`announcements`) ve kullanıcı verisi (`candidate_profile`, `user_job_state`, `user_verifications`, `user_tasks`,
+  `notifications`, `app_settings`) ayrıdır. Tarama, kullanıcı tablolarına yazmaz.
+- `careerpilot.db` depoda yalnızca ilk veri kaynağı olarak durur; üretim verisi artık Git üzerinden taşınmaz.
+  PostgreSQL'e geçildikten sonra dosya depodan kaldırılabilir.
 
 ## Yayın (Render)
 
-`render.yaml` iki servis tanımlar: API (`careerpilot-tr-api`) ve statik site
-(`careerpilot-tr-web`). Statik site `/api/*` isteklerini API'ye yönlendirir; böylece oturum
-çerezi aynı alan adında kalır. Render panelinde `careerpilot-tr-api` için
-`CAREERPILOT_PASSWORD` değerini bir kez girin; `CAREERPILOT_SESSION_SECRET` Blueprint
-tarafından bir kez üretilip Render'da saklanır. Normal deploylarda bu değerleri değiştirmeyin.
-Şifreyi veya servis ayarlarını değiştirmek mevcut oturumları kapatır; yeniden giriş gerekir.
-`autoDeploy: false` olduğu için branch'e push tek başına yayın yapmaz; Render panelinden
-`careerpilot-tr-api` ve `careerpilot-tr-web` servislerini deploy edin.
+1. Bir PostgreSQL veritabanı oluşturun ve bağlantı adresini alın.
+2. `careerpilot-tr-api` servisinde ortam değişkenlerini girin:
+   `DATABASE_URL` (PostgreSQL adresi), `CAREERPILOT_PASSWORD`, `CAREERPILOT_SESSION_SECRET` (Render üretir),
+   `CAREERPILOT_DB_SEED_FROM_REPO=true`, `CAREERPILOT_SYNC_INTERVAL_HOURS=6`,
+   `PLAYWRIGHT_BROWSERS_PATH=/opt/render/project/src/.playwright-browsers`.
+3. Build komutu: `pip install -r requirements.txt && python -m playwright install chromium`.
+4. Önce API'yi, sonra `careerpilot-tr-web` sitesini yayınlayın.
+5. Giriş yapıp **Kaynaklar › Erişim testi**ni çalıştırın. Test, o sunucudan her kaynağa DNS, bağlantı, sertifika
+   ve HTTP katmanlarını ayrı ayrı ölçer ve tarayıcının (Chromium) açılıp açılmadığını gösterir.
+   - Tarayıcı açılmıyorsa servis Docker ile çalıştırılmalıdır: depodaki `Dockerfile` Chromium'u sistem
+     kitaplıklarıyla kurar (yerelde derlenip denenmiştir). Render'da mevcut servisin çalışma ortamı
+     değiştirilemediği için Docker tabanlı yeni bir web servisi oluşturulur.
 
-**Veri kaybı riski:** Blueprint'te kalıcı disk yoktur. Render'ın ücretsiz planında dosya
-sistemi her yeniden yayında ve servis yeniden başladığında sıfırlanır; yayında girilen
-profil, doğrulamalar, görevler ve notlar **silinir** ve depodaki `careerpilot.db` geri gelir.
-Seçenekler:
+**Otomatik tarama.** `CAREERPILOT_SYNC_INTERVAL_HOURS` tanımlıysa servis, son taramadan o kadar saat geçtiğinde
+kendisi tarar; tarama arka planda çalışır ve arayüzü kilitlemez. Aynı anda tek tarama çalışır: kilit veritabanında
+tutulur (`scan_locks`), bu yüzden birden çok servis örneği ya da başka bir ortamdaki tarayıcı çakışmaz. Ücretsiz
+Render servisi 15 dakika kullanılmayınca uyur; uyurken tarama yapılmaz, servis uyandığında gecikmiş tarama başlar.
+Kesintisiz zamanlama için ücretli bir Render Cron Job'da `python -m backend.sync` çalıştırılabilir.
 
-1. Render'da kalıcı disk (ücretli plan) ekleyip `DATABASE_URL=sqlite:////var/data/careerpilot.db`
-   ve ilk açılış için `CAREERPILOT_DB_SEED_FROM_REPO=true` tanımlamak.
-2. Uygulamayı kendi bilgisayarınızda çalıştırmak (veri kalıcıdır, bütün kaynaklara erişilir).
-3. Yayını yalnızca görüntüleme için kullanıp verinin silinebileceğini kabul etmek.
+**Konuma bağlı kaynaklar.** SBB Kamu İlanları, Kariyer Kapısı ve Yerel Yönetimler, Türkiye dışındaki sunuculardan
+gelen istekleri reddediyor ya da yanıtsız bırakıyor (HTTP 403, bağlantı zaman aşımı). Render'ın Türkiye'de bölgesi
+yoktur; bu erişim kuralı yazılımla aşılmaz ve aşılmaya çalışılmaz. Bu üç kaynak, Türkiye'deki bir bilgisayardan
+aynı veritabanına taranabilir:
 
-Diğer sınırlar: SBB, Kariyer Kapısı ve Yerel Yönetimler yurt dışındaki sunuculardan gelen
-istekleri kabul etmiyor; Render'daki “Şimdi tara” bu üç kaynağı güncelleyemeyebilir. OCR,
-ücretsiz planın 512 MB bellek sınırına sığmadığı için Render'da varsayılan olarak kapalıdır
-(`CAREERPILOT_OCR=on` ile açılabilir).
+```bash
+DATABASE_URL=postgresql://… python -m backend.sync
+```
+
+macOS'ta bunu 6 saatte bir kendiliğinden çalıştırmak için: `sh scripts/tarayici_kur.sh` (kaldırmak için
+`sh scripts/tarayici_kur.sh kaldir`). Kaynaklar sayfası her kaynağın en son hangi ortamdan başarıyla tarandığını
+ve kaç gündür taranamadığını gösterir.
 
 ## Uygunluk sınıfları
 
@@ -144,16 +174,20 @@ sayılmaz. Genel şartlarda (“herhangi bir lisans programı”) bölüm farkı
   Kaçan tarih ilan panelinden elle eklenebilir.
 - Yapay zekâ modeli (metin ya da görüntü) kullanılmaz; ilgili isteğe bağlı adımlar eklenmedi.
 
-## Otomatik günlük tarama (GitHub Actions)
+## GitHub Actions
 
-`.github/workflows/gunluk-tarama.yml` günde iki kez tarama yapıp `careerpilot.db` dosyasını
-depoya işler. GitHub ve Render sunucuları yurt dışında olduğu için SBB, Kariyer Kapısı ve
-Yerel Yönetimler kaynakları bu ortamlarda engellenebilir. Bu üç kaynağın düzenli güncel
-kalması için uygulamayı Türkiye'den erişebilen bilgisayarda açık tutun; yerel başlangıç
-scripti 12 saatte bir tarar. Render'daki “Şimdi tara” düğmesi uzak sunucu erişim engelini
-aşamaz. Komut satırından yerel tam tarama: `.venv/bin/python -m backend.sync`
+Veritabanını depoya yazan zamanlanmış tarama kaldırılmıştır; üretim verisi PostgreSQL'dedir. `gunluk-tarama.yml`
+yalnızca elle, deneme amacıyla çalıştırılabilir ve hiçbir şey kaydetmez.
 
 ## Testler
+
+Gerçek PostgreSQL testleri (aktarım, yedek/geri yükleme, uygulamanın uçtan uca çalışması) yalnızca
+`CAREERPILOT_TEST_POSTGRES_URL` tanımlıyken çalışır:
+
+```bash
+docker run -d --name careerpilot-pg-test -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16-alpine
+CAREERPILOT_TEST_POSTGRES_URL=postgresql://postgres:test@localhost:55432/postgres pytest tests/test_postgres.py
+```
 
 ```bash
 .venv/bin/python -m pytest -q

@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiRequest } from "./client";
 import { useAuth } from "./auth";
+import { DECISION_CATEGORY } from "../../utils/format";
 import type {
+  Decision,
   AccountOverview, DiagnoseReport, SystemStatus, CalendarData, EventInput, JobDetail, ResultsOverview, YlsyOverview, MatchResponse, NotificationList, NotificationSettings,
   Profile, ProfileUpdate, Source, SyncStatus, Task, TaskInput, Tracking, Verification,
 } from "../../types/api";
@@ -67,7 +69,7 @@ export const useSetTracking = () =>
   useApiMutation<{ jobId: number; tracking: Tracking; notes?: string; muted?: boolean }, unknown>(
     ({ jobId, ...body }) => ({ path: `/jobs/${jobId}/tracking`, method: "PATCH", body }), JOB_KEYS,
   );
-interface VerificationInput { jobId: number; decision: "eligible" | "not_eligible"; position_id?: string; note?: string }
+interface VerificationInput { jobId: number; decision: Decision; position_id?: string; note?: string }
 
 export const useSetVerification = () => {
   const queryClient = useQueryClient();
@@ -78,7 +80,7 @@ export const useSetVerification = () => {
       await queryClient.cancelQueries({ queryKey: ["matches"] });
       const previous = queryClient.getQueryData<MatchResponse>(["matches"]);
       if (previous) {
-        const category = input.decision === "eligible" ? "UYGUN" : "UYGUN DEĞİL";
+        const category = DECISION_CATEGORY[input.decision];
         const verification: Verification = {
           decision: input.decision,
           scope: input.position_id ? "position" : "job",

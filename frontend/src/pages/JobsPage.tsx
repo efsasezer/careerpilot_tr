@@ -6,7 +6,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState, QueryState } from "../components/shared/QueryState";
 import { useMatches } from "../services/api/hooks";
 import type { MatchCategory, MatchedPosition } from "../types/api";
-import { CATEGORY_LABEL, groupByJob, sortGroups, type JobGroup } from "../utils/format";
+import { CATEGORY_LABEL, groupByJob, sortGroups, type JobGroup, DECISION_CATEGORY } from "../utils/format";
 
 const CATEGORIES: MatchCategory[] = ["UYGUN", "POTANSİYEL OLARAK UYGUN", "UYGUN DEĞİL"];
 const PAGE_SIZE = 30;
@@ -145,7 +145,7 @@ export default function JobsPage({ mode = "all" }: { mode?: Mode }) {
           <p className="result-count">{groups.length} ilan</p>
           <div className="job-list">{groups.slice(0, limit).map((group) => (
             <JobCard key={group.jobId} group={group}
-              onDecision={(decision) => selectCategory(decision === "eligible" ? "UYGUN" : "UYGUN DEĞİL")} />
+              onDecision={(decision) => selectCategory(DECISION_CATEGORY[decision])} />
           ))}</div>
           {groups.length > limit && (
             <button className="button load-more" onClick={() => setLimit(limit + PAGE_SIZE)}>Daha fazla göster ({groups.length - limit})</button>

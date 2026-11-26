@@ -1,8 +1,9 @@
+import type { Decision } from "../../types/api";
 import { Bookmark, Building2, CheckCheck, MapPin, UserCheck } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { CategoryBadge, DataStatusChip, DeadlineChip } from "../shared/Badges";
 import { VerifyButtons } from "./VerifyButtons";
-import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, type JobGroup } from "../../utils/format";
+import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, type JobGroup, DECISION_LABEL } from "../../utils/format";
 
 export function useOpenJob() {
   const [params, setParams] = useSearchParams();
@@ -13,7 +14,7 @@ export function useOpenJob() {
   };
 }
 
-export function JobCard({ group, onDecision }: { group: JobGroup; onDecision?: (decision: "eligible" | "not_eligible") => void }) {
+export function JobCard({ group, onDecision }: { group: JobGroup; onDecision?: (decision: Decision) => void }) {
   const open = useOpenJob();
   const job = group.primary;
   const multiple = group.positions.length > 1;
@@ -45,7 +46,7 @@ export function JobCard({ group, onDecision }: { group: JobGroup; onDecision?: (
         <p className="job-card-reason">{reason}</p>
         {verified && (
           <p className="job-card-decision">
-            Sistem: {CATEGORY_LABEL[job.system_category]} · Siz: {verified.decision === "eligible" ? "Uygun" : "Uygun değil"}
+            Sistem: {CATEGORY_LABEL[job.system_category]} · Siz: {DECISION_LABEL[verified.decision]}
           </p>
         )}
         <div className="job-card-meta">

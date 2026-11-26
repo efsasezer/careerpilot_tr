@@ -92,7 +92,12 @@ with TestClient(main.app) as client:
         positions = [item for item in client.get("/matches").json()["jobs"] if item["parent_job_id"] == job_id]
         assert positions and all(item["tracking"] == tracking for item in positions), tracking
     assert client.put(f"/jobs/{job_id}/verification", json={"decision": "not_eligible", "note": "elle"}).status_code == 200
+    assert client.put(f"/jobs/{job_id}/verification", json={"decision": "unsure"}).status_code == 200
+    assert {item["category"] for item in client.get("/matches").json()["jobs"]} == {"POTANSİYEL OLARAK UYGUN"}
+    assert client.delete(f"/jobs/{job_id}/verification").status_code == 200  # geri alınabilir
     assert client.put(f"/jobs/{job_id}/verification", json={"decision": "eligible"}).status_code == 200  # tekrar değiştirilebilir
+    muted = client.patch(f"/jobs/{job_id}/tracking", json={"tracking": "", "muted": True}).json()
+    assert muted["muted"] is True and client.get(f"/jobs/{job_id}/detail").json()["muted"] is True
     assert client.patch(f"/jobs/{job_id}/tracking", json={"tracking": "saved"}).status_code == 200
 
     # 5. Yeniden tarama ve başarısız kaynak kullanıcı verisine ve ilanlara dokunmaz

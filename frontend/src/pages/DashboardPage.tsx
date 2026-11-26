@@ -10,6 +10,7 @@ import { addDays, formatDate, formatTimestamp, groupByJob, sortGroups, todayIso 
 /** Profilde eksik olup en çok ilanı "doğrulanmalı" durumunda bırakan bilgiler. */
 const PROFILE_HINTS: Record<string, { filled: (profile: Profile) => boolean; label: string }> = {
   "Sürücü belgesi": { filled: (p) => p.driver_license !== null, label: "Sürücü belgesi bilginizi girin" },
+  "KPSS yılı": { filled: (p) => p.kpss_year !== null, label: "KPSS sınav yılınızı girin" },
   YDS: { filled: (p) => p.yds_score !== null, label: "Yabancı dil puanınızı girin" },
   Deneyim: { filled: (p) => p.experience_years !== null, label: "Mesleki deneyim sürenizi girin" },
   Yaş: { filled: (p) => p.age !== null, label: "Yaşınızı girin" },

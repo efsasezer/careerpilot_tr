@@ -1,6 +1,6 @@
-import { CircleCheck, CircleX, Undo2 } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleX, Undo2 } from "lucide-react";
 import { useClearVerification, useSetVerification } from "../../services/api/hooks";
-import type { Verification } from "../../types/api";
+import type { Decision, Verification } from "../../types/api";
 
 /** "Doğruladım: Uygun / Uygun değil" ve geri alma. Karar sunucuda sistem kararından ayrı saklanır. */
 export function VerifyButtons({
@@ -11,13 +11,13 @@ export function VerifyButtons({
   verification: Verification | null;
   note?: string;
   compact?: boolean;
-  onDecision?: (decision: "eligible" | "not_eligible") => void;
+  onDecision?: (decision: Decision) => void;
 }) {
   const set = useSetVerification();
   const clear = useClearVerification();
   const busy = set.isPending || clear.isPending;
   const current = verification?.decision ?? null;
-  const decide = (decision: "eligible" | "not_eligible") =>
+  const decide = (decision: Decision) =>
     set.mutate(
       { jobId, decision, position_id: positionId, note: note ?? verification?.note ?? "" },
       { onSuccess: () => onDecision?.(decision) },
@@ -27,6 +27,9 @@ export function VerifyButtons({
     <div className={`verify ${compact ? "verify-compact" : ""}`} onClick={(event) => event.stopPropagation()}>
       <button type="button" className={`button button-small ${current === "eligible" ? "button-ok" : ""}`} disabled={busy} onClick={() => decide("eligible")}>
         <CircleCheck size={15} /> {compact ? "Uygun" : "Doğruladım: Uygun"}
+      </button>
+      <button type="button" className={`button button-small ${current === "unsure" ? "button-active" : ""}`} disabled={busy} onClick={() => decide("unsure")}>
+        <CircleHelp size={15} /> {compact ? "Potansiyel" : "Potansiyel uygun"}
       </button>
       <button type="button" className={`button button-small ${current === "not_eligible" ? "button-bad" : ""}`} disabled={busy} onClick={() => decide("not_eligible")}>
         <CircleX size={15} /> {compact ? "Uygun değil" : "Doğruladım: Uygun değil"}

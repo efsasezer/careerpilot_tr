@@ -570,6 +570,27 @@ def _format_terms(terms):
 # Ana sınıflandırma
 # ----------------------------------------------------------------------------
 
+_KPSS_YEAR = re.compile(
+    r"((?:20\d{2}\s*(?:,|ve|veya|/|-|–)?\s*){1,3})(?:yili(?:nda)?\s*)?(?:yapilan\s*|yapilmis olan\s*)?(?:\(?b\)?\s*grubu\s*)?(?:kpss|kamu personeli? secme)"
+)
+
+
+def required_kpss_years(sentences) -> tuple[list[int], str]:
+    """İlanın geçerli saydığı KPSS yılları ve kanıt cümlesi. Yıl yazmıyorsa boş liste (tahmin yok)."""
+    for sentence, normalized in sentences:
+        if "kpss" not in normalized and "kamu personel" not in normalized:
+            continue
+        if any(word in normalized for word in ("sayili", "resmi gazete", "yonetmelik")) and "puan" not in normalized:
+            continue
+        match = _KPSS_YEAR.search(normalized)
+        if not match:
+            continue
+        years = sorted({int(year) for year in re.findall(r"20\d{2}", match.group(1)) if 2015 <= int(year) <= 2100})
+        if years:
+            return years, sentence
+    return [], ""
+
+
 def classify_public_job(job, candidate):
     """Kategori, gerekçe ve şart bazında değerlendirme döndürür."""
     title = str(_job_value(job, "title", "") or "")
@@ -708,6 +729,19 @@ def classify_public_job(job, candidate):
                 add("KPSS", "met", f"{used} puanınız {score:.2f}; puan türü eşleşiyor. Taban puan yok, başvuru şartı karşılanıyor.", kpss_quote)
     elif not academic and mentions_kpss:
         add("KPSS", "unknown", "İlanda KPSS şartı var ancak puan türü/taban puan metinden okunamadı; resmî ilandan doğrulanmalı.", kpss_quote)
+
+    # KPSS yılı: ilan belirli bir yılın sonucunu istiyorsa puan türünden bağımsız ayrı bir şarttır.
+    if not academic and mentions_kpss:
+        required_years, year_quote = required_kpss_years(sentences)
+        if required_years:
+            listed = " veya ".join(str(year) for year in required_years)
+            own_year = candidate.get("kpss_year")
+            if not own_year:
+                add("KPSS yılı", "unknown", f"İlan {listed} KPSS sonucunu istiyor; profilinizde KPSS sınav yılı yok.", year_quote)
+            elif int(own_year) in required_years:
+                add("KPSS yılı", "met", f"KPSS sınav yılınız {own_year}; ilan {listed} sonucunu istiyor.", year_quote)
+            else:
+                add("KPSS yılı", "not_met", f"KPSS sınav yılınız {own_year}; ilan {listed} sonucunu istiyor.", year_quote)
 
     if not academic:
         _assess_other_requirements(candidate, description, mandatory, normalized_text, add, reference_date)
@@ -1072,6 +1106,7 @@ def build_candidate_profile(stored_profile=None):
         "department_aliases": ", ".join(item for item in aliases if item),
         "faculty": get("faculty") or "",
         "university": get("university") or "",
+        "kpss_year": get("kpss_year"),
         "kpss_score_type": primary,
         "kpss_score": scores.get(primary),
         "kpss_scores": scores,

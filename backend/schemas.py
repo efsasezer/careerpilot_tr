@@ -67,6 +67,7 @@ class ProfileUpdate(BaseModel):
     kpss_score_type: str = Field(default="P3", max_length=30)
     kpss_p3: float | None = Field(default=None, ge=0, le=100)
     kpss_scores: dict[str, float] | None = None
+    kpss_year: int | None = Field(default=None, ge=2010, le=2100)
     preferred_locations: str = Field(default="Türkiye geneli", max_length=500)
     accepts_shifts: bool | None = None
     yds_score: float | None = Field(default=None, ge=0, le=100)
@@ -144,7 +145,7 @@ class LoginRequest(BaseModel):
 
 
 class VerificationUpdate(BaseModel):
-    decision: str = Field(pattern="^(eligible|not_eligible)$")
+    decision: str = Field(pattern="^(eligible|unsure|not_eligible)$")
     position_id: str = Field(default="", max_length=120)
     note: str = Field(default="", max_length=2000)
 

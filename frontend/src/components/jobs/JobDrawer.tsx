@@ -10,7 +10,7 @@ import {
   useCheckJobResults, useDecideResult, useSetResultSource,
 } from "../../services/api/hooks";
 import type { JobDetail, MatchedPosition, Tracking } from "../../types/api";
-import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp } from "../../utils/format";
+import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp, DECISION_LABEL } from "../../utils/format";
 
 const ORDER = { UYGUN: 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2 } as const;
 const APPLIED_FLOW: Tracking[] = ["applied", "awaiting", "won", "lost"];
@@ -185,7 +185,7 @@ function DrawerBody({ job }: { job: JobDetail }) {
       <section className="drawer-section">
         <h3>Kendi kararınız</h3>
         <p className="muted">
-          Sistem: {CATEGORY_LABEL[selected.system_category]} · Siz: {job.job_verification ? (job.job_verification.decision === "eligible" ? "Uygun" : "Uygun değil") : "Henüz bakmadım"}
+          Sistem: {CATEGORY_LABEL[selected.system_category]} · Siz: {job.job_verification ? DECISION_LABEL[job.job_verification.decision] : "Henüz bakmadım"}
           {job.job_verification?.verified_at ? ` (${formatTimestamp(job.job_verification.verified_at)})` : ""}
         </p>
         <VerifyButtons jobId={job.id} verification={job.job_verification} note={verifyNote} />

@@ -85,9 +85,14 @@ def probe(name: str, url: str) -> dict:
 
     http, error, seconds = _timed(fetch)
     result["http"] = {"ok": error is None and http is not None and http["status"] == 200, "error": error, "seconds": seconds, **(http or {})}
+    if http is not None and not result["tls"]["ok"]:
+        # Sunucu ara sertifikayı göndermiyor; zincir doğrulanarak tamamlandı ve bağlantı kuruldu.
+        result["tls"] = {**result["tls"], "ok": True, "completed": True}
     if error:
         kind = "TLS" if "SSL" in error else "zaman aşımı" if "Timeout" in error else "bağlantı"
         result["verdict"] = f"HTTP isteği tamamlanamadı ({kind})"
+    elif http["status"] in (403, 404) and urlsplit(url).path in ("", "/") and "dosya" in host:
+        result["verdict"] = "Erişilebilir (belge sunucusu; kök adres kapalı)"
     elif http["status"] in (401, 403):
         result["verdict"] = f"HTTP {http['status']}: sunucu bu ortamdan gelen isteği reddediyor (erişim kuralı)"
     elif http["status"] == 429:

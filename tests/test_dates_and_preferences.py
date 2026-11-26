@@ -187,3 +187,28 @@ def test_today_is_turkey_date_even_when_server_clock_is_utc(monkeypatch):
     monkeypatch.setattr(clock, "datetime", _Frozen)
     assert clock.today() == date(2026, 11, 27)
     assert clock.now() == datetime(2026, 11, 27, 1, 30)
+
+
+# ---------------------------------------------------------------------------
+# KPSS yılı ayrı bir şarttır
+# ---------------------------------------------------------------------------
+
+def _kpss_year_status(text, **profile):
+    from backend.eligibility import build_candidate_profile, classify_public_job
+
+    candidate = build_candidate_profile({"degree": "Lisans", "department": "İşletme", "kpss_scores": {"P3": 80}, **profile})
+    job = {"title": "Memur Alımı", "organization": "Kurum", "description": text}
+    found = {item["name"]: item for item in classify_public_job(job, candidate)["requirements"]}
+    return found.get("KPSS yılı", {}).get("status"), found.get("KPSS", {}).get("status")
+
+
+def test_kpss_year_is_checked_separately_from_score():
+    text = ("Herhangi bir lisans programından mezun olmak. ÖSYM tarafından 2026 yılında yapılan Kamu Personel Seçme Sınavı (B) grubundan "
+            "KPSS P3 puan türünden en az 70 puan almış olmak. ") * 2
+    assert _kpss_year_status(text) == ("unknown", "met")             # yıl profilde yok: doğrulanmalı
+    assert _kpss_year_status(text, kpss_year=2026) == ("met", "met")
+    assert _kpss_year_status(text, kpss_year=2024) == ("not_met", "met")
+    both = text.replace("2026 yılında yapılan", "2025 veya 2026 yılında yapılan")
+    assert _kpss_year_status(both, kpss_year=2025) == ("met", "met")
+    without_year = text.replace("2026 yılında yapılan ", "")
+    assert _kpss_year_status(without_year, kpss_year=2024)[0] is None  # ilan yıl yazmıyorsa şart üretilmez

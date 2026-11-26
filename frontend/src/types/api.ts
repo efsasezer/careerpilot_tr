@@ -24,6 +24,7 @@ export interface Profile {
   preferred_locations: string;
   accepts_shifts: boolean | null;
   yds_score: number | null;
+  kpss_year: number | null;
   ales_score: number | null;
   ales_score_type: "" | "sayisal" | "sozel" | "esit_agirlik";
   ales_year: number | null;
@@ -49,8 +50,10 @@ export interface Requirement {
   evidence: string;
 }
 
+export type Decision = "eligible" | "unsure" | "not_eligible";
+
 export interface Verification {
-  decision: "eligible" | "not_eligible";
+  decision: Decision;
   scope: "job" | "position";
   note: string;
   verified_at: string | null;

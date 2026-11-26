@@ -263,7 +263,7 @@ def _duplicate_groups(jobs: list[Job]) -> tuple[set[int], dict[int, list[Job]]]:
     return hidden, copies
 
 
-DECISION_CATEGORY = {"eligible": "UYGUN", "not_eligible": "UYGUN DEĞİL"}
+DECISION_CATEGORY = {"eligible": "UYGUN", "unsure": "POTANSİYEL OLARAK UYGUN", "not_eligible": "UYGUN DEĞİL"}
 
 
 def job_content_version(job: Job, documents: list[JobDocument], positions_by_document: dict) -> tuple[str, dict]:
