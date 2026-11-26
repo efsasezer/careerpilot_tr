@@ -26,6 +26,7 @@ from .eligibility import (
 from .events import refresh_all_events, sync_job_events
 from .kariyerkapisi import _label_values
 from .models import Job, JobDocument, JobDocumentScan, SourceListing, SourceSyncHistory, UserVerification
+from .sources.base import classify_error
 from .sources.registry import get_source_registry
 
 logger = logging.getLogger(__name__)
@@ -471,6 +472,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         # so the source card and sync history still explain what actually failed.
         detail = str(error).strip() or f"{type(error).__name__} (hata iletisi boş)"
         report["error"] = detail[:500]
+        report["error_kind"] = classify_error(error)
         logger.warning("Source %s failed: %s", source_key, detail)
 
     finally:
@@ -485,10 +487,96 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         source_key=source_key, source_name=source_name, status=report["status"], checked_at=checked_at,
         pages_checked=report["pages_checked"], found=report["found"], imported=report["imported"],
         updated=report["updated"], unchanged=report["unchanged"], detail_failed=report["detail_failed"],
-        error=summary_error or "",
+        error=summary_error or "", error_kind=report.get("error_kind", ""), origin=config.scan_origin(),
     ))
     db.commit()
     return report
+
+
+# ---------------------------------------------------------------------------
+# Tarama kilidi: aynı veritabanına yazan bütün tarayıcılar için tek seferde tek tarama
+# ---------------------------------------------------------------------------
+
+LOCK_NAME = "source-sync"
+LOCK_LEASE = timedelta(minutes=20)
+
+
+def acquire_scan_lock(db: Session, owner: str, *, now: datetime | None = None) -> bool:
+    """Kilidi alır; başka bir tarama sürüyorsa False döner. Süresi dolmuş (sahibi çökmüş) kilit devralınır."""
+    from sqlalchemy import update
+    from sqlalchemy.exc import IntegrityError
+
+    from .models import ScanLock
+
+    now = now or datetime.now()
+    taken = db.execute(
+        update(ScanLock).where(ScanLock.name == LOCK_NAME, ScanLock.expires_at < now)
+        .values(owner=owner, acquired_at=now, expires_at=now + LOCK_LEASE)
+    ).rowcount
+    if taken:
+        db.commit()
+        return True
+    if db.get(ScanLock, LOCK_NAME) is not None:
+        db.rollback()
+        return False
+    try:
+        db.add(ScanLock(name=LOCK_NAME, owner=owner, acquired_at=now, expires_at=now + LOCK_LEASE))
+        db.commit()
+        return True
+    except IntegrityError:  # aynı anda başka bir süreç ekledi
+        db.rollback()
+        return False
+
+
+def extend_scan_lock(db: Session, owner: str) -> None:
+    from sqlalchemy import update
+
+    from .models import ScanLock
+
+    db.execute(update(ScanLock).where(ScanLock.name == LOCK_NAME, ScanLock.owner == owner)
+               .values(expires_at=datetime.now() + LOCK_LEASE))
+    db.commit()
+
+
+def release_scan_lock(db: Session, owner: str) -> None:
+    from sqlalchemy import delete
+
+    from .models import ScanLock
+
+    db.rollback()
+    db.execute(delete(ScanLock).where(ScanLock.name == LOCK_NAME, ScanLock.owner == owner))
+    db.commit()
+
+
+class ScanAlreadyRunning(RuntimeError):
+    pass
+
+
+def run_sync_locked(db: Session, *, on_progress=None, **kwargs) -> dict:
+    """Kilit altında tarama. Başka bir tarama (başka bir sunucuda bile olsa) sürüyorsa ScanAlreadyRunning."""
+    import os
+    import socket
+
+    owner = f"{config.scan_origin()}:{socket.gethostname()}:{os.getpid()}:{time.time():.0f}"[:120]
+    if not acquire_scan_lock(db, owner):
+        raise ScanAlreadyRunning("Başka bir tarama zaten sürüyor.")
+    last_beat = time.monotonic()
+
+    def progress(source: str, current: int, total: int) -> None:
+        nonlocal last_beat
+        if time.monotonic() - last_beat > 60:
+            last_beat = time.monotonic()
+            try:
+                extend_scan_lock(db, owner)
+            except Exception:  # kira uzatılamazsa tarama sürer; kilit süresi dolunca boşalır
+                db.rollback()
+        if on_progress:
+            on_progress(source, current, total)
+
+    try:
+        return run_sync(db, on_progress=progress, **kwargs)
+    finally:
+        release_scan_lock(db, owner)
 
 
 def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, scan_documents: bool = True,
@@ -734,7 +822,9 @@ class SyncManager:
 
         try:
             with SessionLocal() as db:
-                self.state["report"] = run_sync(db, on_progress=self._progress)
+                self.state["report"] = run_sync_locked(db, on_progress=self._progress)
+        except ScanAlreadyRunning as running:
+            self.state["error"] = f"{running} Bittiğinde sonuçlar burada görünecek."
         except Exception as error:  # pragma: no cover - beklenmeyen hata durumunu kullanıcıya göster
             logger.exception("Sync run failed")
             self.state["error"] = str(error)[:500]
@@ -799,7 +889,11 @@ def main(argv: list[str] | None = None) -> int:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         cleanup_legacy_rows(db)
-        report = run_sync(db)
+        try:
+            report = run_sync_locked(db)
+        except ScanAlreadyRunning as running:
+            print(str(running))
+            return 0
 
     lines = ["| Kaynak | Durum | Bulunan | Yeni | Güncellenen | Okunamayan | Not |", "|---|---|---|---|---|---|---|"]
     for item in report["results"].values():

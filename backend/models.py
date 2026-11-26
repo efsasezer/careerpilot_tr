@@ -75,6 +75,10 @@ class SourceSyncHistory(Base):
     unchanged: Mapped[int] = mapped_column(Integer, default=0)
     detail_failed: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
+    # Hata türü: dns | connect_timeout | read_timeout | tls | http_403 | http_404 | http_429 | http_5xx | ...
+    error_kind: Mapped[str] = mapped_column(String(30), default="")
+    # Taramanın çalıştığı ortam: "Render", "GitHub Actions", "Yerel bilgisayar" ...
+    origin: Mapped[str] = mapped_column(String(60), default="")
 
 
 class JobDocumentScan(Base):
@@ -270,6 +274,10 @@ class JobEvent(Base):
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     previous_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Tarihin nasıl bulunduğu: listing (kaynağın liste alanı) | label (etiket-değer) | sentence (cümle) | user
+    method: Mapped[str] = mapped_column(String(20), default="")
+    # high: açık etiket ya da kaynağın kendi alanı; medium: cümle bağlamından çıkarım
+    confidence: Mapped[str] = mapped_column(String(10), default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime)
 
 
@@ -379,3 +387,18 @@ class AccountApplication(Base):
     match_status: Mapped[str] = mapped_column(String(20), default="unmatched")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class ScanLock(Base):
+    """Aynı anda tek tarama çalışmasını sağlayan, süreli (kira) veritabanı kilidi.
+
+    Web servisi, zamanlanmış iş ve başka bir bilgisayardaki tarayıcı aynı veritabanına yazabilir;
+    kilit veritabanında durduğu için hepsi için geçerlidir. Sahibi çökerse kira süresi dolunca boşalır.
+    """
+
+    __tablename__ = "scan_locks"
+
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(120))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)

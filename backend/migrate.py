@@ -1,183 +1,155 @@
+"""Güvenli, yeniden çalıştırılabilir şema göçü (SQLite ve PostgreSQL).
+
+Kurallar:
+- Yalnızca ekleme yapılır: eksik tablo, eksik sütun, eksik indeks. Hiçbir tablo, sütun ya da satır silinmez.
+- Her adım "yoksa ekle" biçimindedir; göç kaç kez çalıştırılırsa çalıştırılsın sonuç aynıdır.
+- SQLite dosyasında şema değişecekse önce dosyanın yedeği alınır.
+- Göçten sonra satır sayıları değişmemiş olmalıdır; değiştiyse hata verilir.
+- Uygulanan sürüm `schema_migrations` tablosuna yazılır.
 """
-Güvenli veritabanı migration scripti.
-Mevcut verileri KORUR, yalnızca eksik sütunları ekler.
-"""
+
+from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import create_engine
-from sqlalchemy.engine import make_url
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.schema import CreateIndex
 
-from .database import DATABASE_URL
+SCHEMA_VERSION = 5  # 5: kalıcı tarama kilidi, hata türü/çıkış ortamı, olay kanıtı alanları
 
 
-def migration_database_path() -> Path | None:
-    url = make_url(DATABASE_URL)
+def migration_database_path(database_url: str | None = None) -> Path | None:
+    from .database import DATABASE_URL
+
+    url = make_url(database_url or DATABASE_URL)
     if url.get_backend_name() != "sqlite" or not url.database or url.database == ":memory:":
         return None
     return Path(url.database)
 
 
-def add_column_if_missing(cursor, table, column, col_type, default=None):
-    cursor.execute(f"PRAGMA table_info({table})")
-    existing = {row[1] for row in cursor.fetchall()}
-    if not existing:
-        return  # tablo henüz yok; create_all tam şemayla oluşturacak
-    if column not in existing:
-        if default is not None:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}")
-        else:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-        print(f"  + {table}.{column} eklendi")
+def _literal_default(column) -> str | None:
+    """Eklenen sütunda eski satırların alacağı değer (modeldeki sabit varsayılan)."""
+    default = column.default
+    if default is None or not getattr(default, "is_scalar", False):
+        return None
+    value = default.arg
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    return None
 
 
-def migrate():
-    db_path = migration_database_path()
-    if db_path is None:
-        return
-    if not db_path.exists():
-        return
+def pending_changes(engine: Engine, metadata) -> dict:
+    """Modelde olup veritabanında olmayan tablo, sütun ve indeksler."""
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    changes = {"tables": [], "columns": [], "indexes": []}
+    for table in metadata.sorted_tables:
+        if table.name not in existing_tables:
+            changes["tables"].append(table.name)
+            continue
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name not in present:
+                changes["columns"].append((table.name, column.name))
+        indexed = {index["name"] for index in inspector.get_indexes(table.name)}
+        for index in table.indexes:
+            if index.name not in indexed:
+                changes["indexes"].append((table.name, index.name))
+    return changes
 
-    conn = sqlite3.connect(str(db_path))
-    cursor = conn.cursor()
 
-
-    tables = {
-        row[0]
-        for row in cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )
-    }
-    job_columns = {
-        row[1] for row in cursor.execute("PRAGMA table_info(jobs)")
-    } if "jobs" in tables else set()
-    profile_columns = {
-        row[1] for row in cursor.execute("PRAGMA table_info(candidate_profile)")
-    } if "candidate_profile" in tables else set()
-    event_columns = {
-        row[1] for row in cursor.execute("PRAGMA table_info(job_events)")
-    } if "job_events" in tables else set()
-    required_job_columns = {
-        "source_name", "application_start", "announcement_date", "quota",
-        "employment_type", "recruitment_method", "is_employment", "updated_at",
-        "tracking", "archived_reason", "cancellation_notice",
-    }
-    required_profile_columns = {
-        "university", "kpss_score_type", "accepts_shifts", "yds_score", "age",
-        "driver_license", "experience_years", "has_internship",
-        "internship_description", "certificates", "programming_language_evidence",
-        "notes", "updated_at", "kpss_scores", "faculty", "department_aliases", "gender", "special_status", "birth_date", "military_status",
-        "educations", "experiences", "experience_state", "foreign_language", "preferences",
-        "ales_score", "ales_score_type", "ales_year", "gpa",
-    }
-    schema_change_needed = (
-        not {"source_listings", "source_sync_history", "user_job_state", "user_verifications", "job_events", "user_tasks", "user_sessions", "result_announcements", "result_tracking", "announcements", "account_applications"} <= tables
-        or not required_job_columns <= job_columns
-        or not required_profile_columns <= profile_columns
-        or ("job_events" in tables and "verified" not in event_columns)
-    )
-    if schema_change_needed:
-        backup_path = db_path.with_name(
-            f"{db_path.name}.backup.{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}"
-        )
-        backup = sqlite3.connect(str(backup_path))
-        try:
-            conn.backup(backup)
-        finally:
-            backup.close()
-        print(f"Yapı değişikliğinden önce veritabanı yedeği alındı: {backup_path}")
-
-    # --- jobs tablosu ---
-    add_column_if_missing(cursor, "jobs", "source_name", "TEXT", default="''")
-    add_column_if_missing(cursor, "jobs", "application_start", "DATE")
-    add_column_if_missing(cursor, "jobs", "announcement_date", "DATE")
-    add_column_if_missing(cursor, "jobs", "quota", "TEXT", default="''")
-    add_column_if_missing(cursor, "jobs", "employment_type", "TEXT", default="''")
-    add_column_if_missing(cursor, "jobs", "recruitment_method", "TEXT", default="''")
-    add_column_if_missing(cursor, "jobs", "is_employment", "BOOLEAN", default="1")
-    add_column_if_missing(cursor, "jobs", "updated_at", "DATETIME")
-    add_column_if_missing(cursor, "jobs", "tracking", "TEXT", default="''")
-    add_column_if_missing(cursor, "jobs", "archived_reason", "TEXT", default="''")
-    add_column_if_missing(cursor, "jobs", "cancellation_notice", "TEXT", default="''")
-
-    # --- candidate_profile tablosu ---
-    add_column_if_missing(cursor, "candidate_profile", "university", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "kpss_score_type", "TEXT", default="'P3'")
-    add_column_if_missing(cursor, "candidate_profile", "accepts_shifts", "BOOLEAN")
-    add_column_if_missing(cursor, "candidate_profile", "yds_score", "REAL")
-    add_column_if_missing(cursor, "candidate_profile", "age", "INTEGER")
-    add_column_if_missing(cursor, "candidate_profile", "driver_license", "BOOLEAN")
-    add_column_if_missing(cursor, "candidate_profile", "experience_years", "REAL")
-    add_column_if_missing(cursor, "candidate_profile", "has_internship", "BOOLEAN")
-    add_column_if_missing(cursor, "candidate_profile", "internship_description", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "certificates", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "programming_language_evidence", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "notes", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "updated_at", "DATETIME")
-    add_column_if_missing(cursor, "candidate_profile", "kpss_scores", "TEXT", default="'{}'")
-    add_column_if_missing(cursor, "candidate_profile", "faculty", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "gender", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "special_status", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "birth_date", "DATE")
-    add_column_if_missing(cursor, "candidate_profile", "military_status", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "educations", "TEXT", default="'[]'")
-    add_column_if_missing(cursor, "candidate_profile", "experiences", "TEXT", default="'[]'")
-    add_column_if_missing(cursor, "candidate_profile", "experience_state", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "foreign_language", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "preferences", "TEXT", default="'{}'")
-    add_column_if_missing(cursor, "candidate_profile", "ales_score", "REAL")
-    add_column_if_missing(cursor, "candidate_profile", "ales_score_type", "TEXT", default="''")
-    add_column_if_missing(cursor, "candidate_profile", "ales_year", "INTEGER")
-    add_column_if_missing(cursor, "candidate_profile", "gpa", "REAL")
-    add_column_if_missing(cursor, "job_documents", "ocr_confidence", "REAL")
-    add_column_if_missing(cursor, "job_events", "verified", "BOOLEAN", default="0")
-    add_column_if_missing(cursor, "candidate_profile", "department_aliases", "TEXT", default="''")
-
-    conn.commit()
-    before_counts = {}
-    for table in ("jobs", "candidate_profile"):
-        if table in tables:
-            before_counts[table] = cursor.execute(
-                f"SELECT COUNT(*) FROM {table}"
-            ).fetchone()[0]
-    conn.close()
-
-    from .models import Base
-
-    migration_engine = create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread": False},
-    )
+def _backup_sqlite(path: Path) -> Path:
+    backup_path = path.with_name(f"{path.name}.backup.{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}")
+    source = sqlite3.connect(str(path))
+    target = sqlite3.connect(str(backup_path))
     try:
-        Base.metadata.create_all(bind=migration_engine)
+        source.backup(target)
     finally:
-        migration_engine.dispose()
-    with sqlite3.connect(str(db_path)) as move:
-        # Takip durumu ve notlar ilan tablosundan kullanıcı tablosuna taşınır (bir kez).
-        columns = {row[1] for row in move.execute("PRAGMA table_info(jobs)")}
-        if {"tracking", "notes"} <= columns:
-            move.execute(
-                "INSERT OR IGNORE INTO user_job_state (job_id, tracking, notes, updated_at) "
-                "SELECT id, COALESCE(tracking, ''), COALESCE(notes, ''), CURRENT_TIMESTAMP FROM jobs "
-                "WHERE COALESCE(tracking, '') <> '' OR COALESCE(notes, '') <> ''"
-            )
-            move.commit()
-    with sqlite3.connect(str(db_path)) as verify:
-        verify.execute("CREATE INDEX IF NOT EXISTS ix_job_events_event_date ON job_events (event_date)")
-        verify.execute("CREATE INDEX IF NOT EXISTS ix_user_tasks_task_date ON user_tasks (task_date)")
-        integrity = verify.execute("PRAGMA integrity_check").fetchone()[0]
-        after_counts = {
-            table: verify.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in before_counts
-        }
-    if integrity != "ok" or before_counts != after_counts:
-        raise RuntimeError(
-            "Migration doğrulaması başarısız oldu: "
-            f"integrity={integrity}, before={before_counts}, after={after_counts}"
-        )
+        target.close()
+        source.close()
+    return backup_path
+
+
+def _row_counts(engine: Engine, tables: list[str]) -> dict[str, int]:
+    with engine.connect() as connection:
+        return {name: connection.execute(text(f'SELECT COUNT(*) FROM "{name}"')).scalar_one() for name in tables}
+
+
+def migrate(engine: Engine | None = None) -> dict:
+    from .database import Base
+    from .database import engine as default_engine
+    from . import models  # noqa: F401  (tabloların Base'e kaydı)
+
+    engine = engine or default_engine
+    metadata = Base.metadata
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    changes = pending_changes(engine, metadata)
+    changed = bool(changes["tables"] or changes["columns"] or changes["indexes"])
+    report = {"changed": changed, "backup": None, **changes}
+
+    path = migration_database_path(str(engine.url.render_as_string(hide_password=False)))
+    if changed and path is not None and path.exists() and existing_tables:
+        report["backup"] = str(_backup_sqlite(path))
+        print(f"Yapı değişikliğinden önce veritabanı yedeği alındı: {report['backup']}")
+
+    counted = sorted(existing_tables & {table.name for table in metadata.sorted_tables})
+    before = _row_counts(engine, counted)
+
+    metadata.create_all(bind=engine)  # yalnızca eksik tabloları oluşturur
+    preparer = engine.dialect.identifier_preparer
+    with engine.begin() as connection:
+        for table_name, column_name in changes["columns"]:
+            column = metadata.tables[table_name].columns[column_name]
+            column_type = column.type.compile(dialect=engine.dialect)
+            default = _literal_default(column)
+            statement = f"ALTER TABLE {preparer.quote(table_name)} ADD COLUMN {preparer.quote(column_name)} {column_type}"
+            if default is not None:
+                statement += f" DEFAULT {default}"
+                if not column.nullable:
+                    statement += " NOT NULL"
+            connection.execute(text(statement))
+            print(f"  + {table_name}.{column_name} eklendi")
+        for table_name, index_name in changes["indexes"]:
+            index = next(item for item in metadata.tables[table_name].indexes if item.name == index_name)
+            if all(column.name in {c["name"] for c in inspect(connection).get_columns(table_name)} for column in index.columns):
+                connection.execute(CreateIndex(index, if_not_exists=True))
+        # Eski sürümlerde takip durumu ve notlar ilan tablosundaydı; kullanıcı tablosuna bir kez taşınır.
+        job_columns = {column["name"] for column in inspect(connection).get_columns("jobs")} if "jobs" in existing_tables else set()
+        if {"tracking", "notes"} <= job_columns:
+            connection.execute(text(
+                "INSERT INTO user_job_state (job_id, tracking, notes, updated_at) "
+                "SELECT j.id, COALESCE(j.tracking, ''), COALESCE(j.notes, ''), CURRENT_TIMESTAMP FROM jobs j "
+                "WHERE (COALESCE(j.tracking, '') <> '' OR COALESCE(j.notes, '') <> '') "
+                "AND NOT EXISTS (SELECT 1 FROM user_job_state s WHERE s.job_id = j.id)"
+            ))
+        connection.execute(text(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at VARCHAR(40) NOT NULL)"
+        ))
+        applied = connection.execute(text("SELECT 1 FROM schema_migrations WHERE version = :v"), {"v": SCHEMA_VERSION}).first()
+        if applied is None:
+            connection.execute(text("INSERT INTO schema_migrations (version, applied_at) VALUES (:v, :t)"),
+                               {"v": SCHEMA_VERSION, "t": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+
+    after = _row_counts(engine, [name for name in counted if name != "user_job_state"])
+    lost = {name: (before[name], after[name]) for name in after if after[name] < before[name]}
+    if lost:
+        raise RuntimeError(f"Göç doğrulaması başarısız: satır sayısı azaldı {lost}")
+    if path is not None and path.exists():
+        with sqlite3.connect(str(path)) as check:
+            integrity = check.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise RuntimeError(f"Göç doğrulaması başarısız: integrity={integrity}")
+    return report
 
 
 if __name__ == "__main__":
-    migrate()
+    outcome = migrate()
+    print("Şema güncel." if not outcome["changed"] else f"Şema güncellendi: {outcome}")

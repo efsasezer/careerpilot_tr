@@ -40,17 +40,12 @@ def test_streamlit_client_and_its_dependencies_are_gone():
 
 
 def test_migration_uses_configured_render_sqlite_path(monkeypatch):
-    monkeypatch.setattr(migrate, "DATABASE_URL", "sqlite:////var/data/careerpilot.db")
-
-    assert migrate.migration_database_path() == Path("/var/data/careerpilot.db")
+    assert migrate.migration_database_path("sqlite:////var/data/careerpilot.db") == Path("/var/data/careerpilot.db")
 
 
 def test_migration_skips_memory_and_non_sqlite_databases(monkeypatch):
-    monkeypatch.setattr(migrate, "DATABASE_URL", "sqlite:///:memory:")
-    assert migrate.migration_database_path() is None
-
-    monkeypatch.setattr(migrate, "DATABASE_URL", "postgresql://example/db")
-    assert migrate.migration_database_path() is None
+    assert migrate.migration_database_path("sqlite:///:memory:") is None
+    assert migrate.migration_database_path("postgresql://example/db") is None
 
 
 def test_missing_sqlite_database_is_not_silently_created(tmp_path, monkeypatch):
@@ -102,8 +97,15 @@ def test_migration_preserves_existing_database_rows(tmp_path, monkeypatch):
         connection.execute("INSERT INTO candidate_profile (id) VALUES (1)")
         connection.execute("INSERT INTO job_events (id, job_id, kind, event_date, updated_at) VALUES (1, 1, 'exam', '2026-11-28', CURRENT_TIMESTAMP)")
 
-    monkeypatch.setattr(migrate, "DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
-    migrate.migrate()
+    from backend.database import make_engine
+
+    engine = make_engine(f"sqlite:///{db_path.as_posix()}")
+    first = migrate.migrate(engine)
+    assert first["changed"] and first["backup"]
+    # Yeniden çalıştırmak güvenlidir: ikinci kez değişiklik ve yeni yedek olmaz.
+    second = migrate.migrate(engine)
+    assert not second["changed"] and second["backup"] is None
+    engine.dispose()
 
     with sqlite3.connect(db_path) as connection:
         assert connection.execute("SELECT title FROM jobs WHERE id = 1").fetchone() == ("Mevcut ilan",)

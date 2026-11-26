@@ -10,3 +10,8 @@ playwright>=1.48,<2.0
 httpx>=0.27,<1.0
 # Taranmış PDF'ler için OCR (sistem paketi gerektirmez; kurulu değilse OCR adımı atlanır)
 rapidocr-onnxruntime>=1.3,<2.0
+# Eksik ara sertifikayı doğrulayarak tamamlamak için (backend/tls.py)
+cryptography>=42,<60
+certifi
+# Üretim veritabanı (PostgreSQL) sürücüsü
+psycopg[binary]>=3.1,<4

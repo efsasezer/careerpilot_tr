@@ -2,14 +2,26 @@ from pathlib import Path
 import os
 from urllib.parse import unquote, urlsplit
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE_URL = f"sqlite:///{BASE_DIR / 'careerpilot.db'}"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+
+
+def normalize_database_url(value: str) -> str:
+    """Barındırma hizmetlerinin verdiği `postgres://` adresini SQLAlchemy'nin sürücü adına çevirir."""
+    value = (value or "").strip()
+    for prefix in ("postgres://", "postgresql://"):
+        if value.startswith(prefix):
+            return "postgresql+psycopg://" + value[len(prefix):]
+    return value
+
+
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "")) or DEFAULT_DATABASE_URL
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
 
 
 def ensure_sqlite_database_file_exists(database_url: str) -> None:
@@ -60,8 +72,44 @@ def ensure_sqlite_database_file_exists(database_url: str) -> None:
 
 
 ensure_sqlite_database_file_exists(DATABASE_URL)
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args, future=True)
+
+
+def make_engine(url: str):
+    """SQLite ve PostgreSQL için aynı ayarlarla motor kurar."""
+    url = normalize_database_url(url)
+    if url.startswith("sqlite"):
+        created = create_engine(url, connect_args={"check_same_thread": False, "timeout": 30}, future=True)
+
+        @event.listens_for(created, "connect")
+        def _sqlite_pragmas(connection, _record):  # pragma: no cover - sürücü geri çağrısı
+            cursor = connection.cursor()
+            # Tarama yazarken arayüzün okuyabilmesi için WAL; kilitte hata yerine kısa bekleme.
+            cursor.execute("PRAGMA busy_timeout=30000")
+            if ":memory:" not in url and "mode=memory" not in url:
+                cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+
+        return created
+    # Barındırılan PostgreSQL boşta kalan bağlantıları kapatır: kullanmadan önce yokla, 5 dk'da yenile.
+    return create_engine(url, pool_pre_ping=True, pool_recycle=300, pool_size=5, max_overflow=5, future=True)
+
+
+def storage_status() -> dict:
+    """Verinin kalıcı olup olmadığını söyler; kalıcı değilse arayüz bunu açıkça gösterir."""
+    if not IS_SQLITE:
+        return {"backend": "postgresql", "durable": True, "warning": None}
+    hosted = bool(os.getenv("RENDER"))
+    on_disk = "/var/data" in DATABASE_URL or bool(os.getenv("CAREERPILOT_PERSISTENT_DISK"))
+    if hosted and not on_disk:
+        return {
+            "backend": "sqlite", "durable": False,
+            "warning": "Veriler kalıcı değil: bu sunucudaki dosya sistemi her yeniden başlatmada sıfırlanır. "
+                       "Profil, kayıtlar ve notlar kaybolabilir. Kalıcı PostgreSQL için DATABASE_URL tanımlanmalı.",
+        }
+    return {"backend": "sqlite", "durable": True, "warning": None}
+
+
+engine = make_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
