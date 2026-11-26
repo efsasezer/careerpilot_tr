@@ -9,7 +9,7 @@ from backend import main
 from backend.backfill_sbb import backfill_existing_sbb_jobs
 from backend.database import Base
 from backend.models import CandidateProfile, Job, SourceListing, SourceSyncHistory
-from backend.sources import iskur, sbb, yerel_yonetimler
+from backend.sources import iskur, osym, sbb, yerel_yonetimler
 from backend.sources.base import SourceFetchError
 
 
@@ -308,6 +308,95 @@ def test_yerel_yonetimler_traverses_all_pager_pages(monkeypatch):
     assert first["title"].startswith("ANKARA İLİ")
     assert cancelled["is_cancellation"] is True
     assert last["institution"] == "İzmir Büyükşehir Belediye Başkanlığı"
+
+
+def test_yerel_yonetimler_checks_all_linked_documents_for_application_dates(monkeypatch):
+    from backend import documents
+
+    detail_url = "https://yerelyonetimler.csb.gov.tr/ornek-duyuru-100"
+    monkeypatch.setattr(
+        yerel_yonetimler,
+        "fetch_html",
+        lambda _name, _url: (
+            detail_url,
+            """
+            <div class="haber-detay-wrapper">
+              <p>Personel alım ilanı ve kurum bilgileri.</p>
+              <a href="/files/kadro.pdf?download=1">Kadro listesi</a>
+              <a href="/files/basvuru-takvimi.pdf">Başvuru takvimi</a>
+            </div>
+            """,
+        ),
+    )
+    monkeypatch.setattr(documents, "_validate_official_url", lambda url: url)
+    fetched = []
+
+    def fake_fetch_url(url):
+        fetched.append(url)
+        return {
+            "body": b"%PDF-1.4 example",
+            "content_type": "application/pdf",
+        }
+
+    monkeypatch.setattr(documents, "fetch_url", fake_fetch_url)
+    monkeypatch.setattr(
+        documents,
+        "parse_document",
+        lambda url, _body, _content_type: {
+            "text": (
+                "Başvurular 09/12/2026 - 11/12/2026 tarihleri arasında yapılacaktır."
+                if "basvuru-takvimi" in url else "Kadro şartları ve pozisyon bilgileri. " * 5
+            ),
+            "shared_requirements": "",
+            "positions": [],
+            "links": [],
+            "partially_read": False,
+        },
+    )
+
+    detail = yerel_yonetimler.YerelYonetimlerSource().fetch_detail(detail_url)
+
+    assert fetched == [
+        "https://yerelyonetimler.csb.gov.tr/files/kadro.pdf?download=1",
+        "https://yerelyonetimler.csb.gov.tr/files/basvuru-takvimi.pdf",
+    ]
+    assert "Başvurular 09/12/2026 - 11/12/2026" in detail["source_text"]
+    assert detail["document"]["url"] == fetched[0]
+
+
+def test_osym_checks_announcements_and_relevant_exam_lists(monkeypatch):
+    source = osym.OsymSource()
+    pages = {
+        "https://www.osym.gov.tr/": '<a href="/2026-kpss-sinav-sonuclari">KPSS sınav sonuçları</a>',
+        "https://www.osym.gov.tr/Duyurular/Index": (
+            '<a href="/2026-kpss-2026-2-tercih-islemleri">'
+            '2026-KPSS 2026/2 Tercih İşlemleri</a>'
+        ),
+        "https://www.osym.gov.tr/SinavGrubu/Index/3": (
+            '<a href="/2026-kpss-2026-2-tercih-islemleri">'
+            '2026-KPSS 2026/2 Tercih İşlemleri</a>'
+        ),
+        "https://www.osym.gov.tr/SinavGrubu/Index/4": (
+            '<a href="/2026-ekpss-kura-tercih-islemleri">'
+            '2026-EKPSS/Kura Tercih İşlemleri</a>'
+        ),
+    }
+    checked = []
+
+    def fake_get(url):
+        checked.append(url)
+        return url, pages[url]
+
+    monkeypatch.setattr(source, "_get", fake_get)
+
+    listings = source.fetch_listings()
+
+    assert checked == list(pages)
+    assert source.pages_checked == 4
+    assert {item["title"] for item in listings} == {
+        "2026-KPSS 2026/2 Tercih İşlemleri",
+        "2026-EKPSS/Kura Tercih İşlemleri",
+    }
 
 
 def test_iskur_access_rejection_is_not_reported_as_empty_success(monkeypatch):

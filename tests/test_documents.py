@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from backend import documents
+from backend import tls
 from backend.document_sync import _sync_document, sync_jobs_documents
 from backend.eligibility import build_candidate_profile, classify_public_job
 from backend.kariyerkapisi import scrape_public_listing_details
@@ -31,6 +32,85 @@ TURKSEKER_PDF_URL = (
     "https://kariyerkapisi.gov.tr/Ups/Evraklar/Tablo1-turkseker-051126.pdf"
 )
 RUN_LIVE_DOCUMENT_TESTS = os.getenv("CAREERPILOT_LIVE_DOCUMENT_TESTS") == "1"
+
+
+def test_platform_trust_fallback_keeps_certificate_verification_enabled(monkeypatch):
+    sentinel = object()
+
+    def reject_certifi(_url, **_kwargs):
+        raise tls.requests.exceptions.SSLError("unable to get local issuer")
+
+    class FakeSession:
+        verify = True
+
+        def __init__(self):
+            self.adapters = {}
+
+        def get_adapter(self, prefix):
+            return self.adapters.get(prefix)
+
+        def mount(self, prefix, adapter):
+            self.adapters[prefix] = adapter
+
+        def get(self, _url, **kwargs):
+            assert kwargs.get("verify") is not False
+            adapter = self.adapters["https://webdosya.csb.gov.tr/"]
+            assert isinstance(adapter, tls._SystemTrustAdapter)
+            assert adapter._ssl_context.verify_mode == tls.ssl.CERT_REQUIRED
+            assert adapter._ssl_context.check_hostname
+            return sentinel
+
+    monkeypatch.setattr(tls.requests, "get", reject_certifi)
+    monkeypatch.setattr(tls.requests, "Session", FakeSession)
+
+    result = tls.get("https://webdosya.csb.gov.tr/files/notice.docx")
+
+    assert result is sentinel
+
+
+def test_tls_helper_rejects_disabled_certificate_verification(monkeypatch):
+    monkeypatch.setattr(
+        tls.requests,
+        "get",
+        lambda *_args, **_kwargs: pytest.fail("The request must not be sent."),
+    )
+
+    with pytest.raises(ValueError, match="doğrulaması devre dışı bırakılamaz"):
+        tls.get("https://webdosya.csb.gov.tr/files/notice.docx", verify=False)
+
+
+def test_fetch_url_uses_tls_helper_for_verified_document_download(monkeypatch):
+    url = "https://webdosya.csb.gov.tr/files/notice.docx"
+    monkeypatch.setattr(documents, "_validate_official_url", lambda value: value)
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self):
+            self.url = url
+            self.headers = {
+                "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+
+        def iter_content(self, chunk_size):
+            assert chunk_size == 64 * 1024
+            yield b"PK\x03\x04document"
+
+        def close(self):
+            pass
+
+    def fake_tls_get(request_url, **kwargs):
+        calls.append((request_url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(documents.tls, "get", fake_tls_get)
+
+    result = documents.fetch_url(url)
+
+    assert result["body"] == b"PK\x03\x04document"
+    assert calls[0][0] == url
+    assert calls[0][1].get("verify") is None
 
 
 def test_discovers_official_pdf_attachment_by_link_and_text(monkeypatch):

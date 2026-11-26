@@ -38,7 +38,14 @@ NON_EMPLOYMENT_PATTERN = re.compile(
     r"yuksek lisans egitimi|yurt disi yuksek lisans|(?<![a-z])burs(?:u|lar\w*)?(?![a-z])|staj programi|egitim programi|kariyer fuari"
 )
 _DATE = r"(\d{1,2})\s*[./]\s*(\d{1,2})\s*[./]\s*(\d{4})"
-_DATE_RANGE = re.compile(rf"{_DATE}\s*(?:tarihinden|tarihinde|gunu)?[^\d]{{0,60}}?{_DATE}")
+_DATE_RANGE = re.compile(
+    rf"{_DATE}\s*(?:[-–—]\s*|\s+(?:ile|ve)\s+|\s+tarihinden(?:\s+baslayarak)?\s*){_DATE}"
+)
+_APPLICATION_DEADLINE = re.compile(
+    r"\b(?:son\s+(?:basvuru|muracaat)\s*(?:tarihi|gunu)?|"
+    r"basvuru(?:nun)?\s+(?:son\s+gunu|bitis(?:\s+tarihi)?)|"
+    r"basvuru\s+suresinin\s+son\s+gunu|basvurularin\s+son\s+gunu)\b"
+)
 
 
 def parse_turkish_date(text: str | date | None) -> date | None:
@@ -73,17 +80,40 @@ def _safe_date(year: int, month: int, day: int) -> date | None:
 def application_window_from_text(text: str) -> tuple[date | None, date | None]:
     """İlan metnindeki "başvurular 10.11.2026 - 24.11.2026 tarihleri arasında" kalıbını okur."""
     flowed = normalize_text(reflow_text(text or ""))
-    for sentence in _sentences(flowed):
-        if not any(word in sentence for word in ("basvuru", "muracaat", "tercih")):
-            continue
+    sentences = _sentences(flowed)
+    for index, sentence in enumerate(sentences):
         match = _DATE_RANGE.search(sentence)
         if not match:
+            continue
+        context = " ".join(sentences[max(0, index - 2):index + 1])
+        if not any(word in context for word in ("basvuru", "muracaat", "tercih")):
             continue
         start = _safe_date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
         end = _safe_date(int(match.group(6)), int(match.group(5)), int(match.group(4)))
         if start and end and start <= end and (end - start).days <= 120:
             return start, end
     return None, None
+
+
+def application_deadline_from_text(text: str) -> date | None:
+    """Return a date only when nearby wording identifies it as an application deadline."""
+    for sentence in _sentences(reflow_text(text or "")):
+        normalized = normalize_text(sentence)
+        labels = list(_APPLICATION_DEADLINE.finditer(normalized))
+        if not labels:
+            continue
+        dates = list(re.finditer(_DATE, sentence))
+        for label in labels:
+            nearby = [
+                match for match in dates
+                if (
+                    0 <= match.start() - label.end() <= 80
+                    or 0 <= label.start() - match.end() <= 40
+                )
+            ]
+            if nearby:
+                return parse_turkish_date(nearby[0].group())
+    return None
 
 
 def organization_key(value: str) -> str:
@@ -176,8 +206,13 @@ def _apply_detail(job: Job, item: dict, details: dict) -> bool:
     start_text = details.get("start_date") or labels.get("start_date")
     end_text = details.get("end_date") or labels.get("end_date")
     text_start, text_end = application_window_from_text(text)
+    text_deadline = application_deadline_from_text(text)
     changed |= _set(job, "application_start", parse_turkish_date(start_text) or text_start, overwrite=False)
-    changed |= _set(job, "application_deadline", parse_turkish_date(end_text) or text_end, overwrite=False)
+    changed |= _set(
+        job, "application_deadline",
+        parse_turkish_date(end_text) or text_end or text_deadline,
+        overwrite=False,
+    )
     changed |= _set(job, "announcement_date", parse_turkish_date(details.get("announcement_date")), overwrite=False)
 
     changed |= _set(job, "organization", str(details.get("institution") or labels.get("institution") or "")[:250], overwrite=False)
@@ -312,11 +347,14 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         "updated": 0, "unchanged": 0, "detail_failed": 0, "cancelled": 0, "error": None,
         "detail_errors": [], "touched_job_ids": [],
     }
+    fetch_warnings: list[str] = []
     rejected_job_ids = set(db.scalars(select(UserVerification.job_id).where(
         UserVerification.position_id == "", UserVerification.decision == "not_eligible",
     )).all())
     try:
         listings = source.fetch_listings()
+        fetch_warnings = list(getattr(source, "fetch_warnings", []) or [])
+        report["fetch_warnings"] = fetch_warnings
         report["pages_checked"] = getattr(source, "pages_checked", 0)
         report["found"] = len(listings)
         previous_found = db.scalar(
@@ -423,7 +461,8 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
             report["cancelled"] += _mark_cancelled(db, source_name, item)
         db.commit()
         report["status"] = (
-            "warning" if report.get("empty_warning") else "partial" if report["detail_failed"] else "ok"
+            "warning" if report.get("empty_warning") else "partial"
+            if report["detail_failed"] or fetch_warnings else "ok"
         )
     except Exception as error:
         db.rollback()
@@ -441,7 +480,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
 
     summary_error = report["error"] or report.get("empty_warning") or "; ".join(
         f"{item['title'][:60]}: {item['error']}" for item in report["detail_errors"][:5]
-    )
+    ) or "; ".join(fetch_warnings[:5])
     db.add(SourceSyncHistory(
         source_key=source_key, source_name=source_name, status=report["status"], checked_at=checked_at,
         pages_checked=report["pages_checked"], found=report["found"], imported=report["imported"],
@@ -742,6 +781,7 @@ sync_manager = SyncManager()
 def main(argv: list[str] | None = None) -> int:
     """Komut satırından tek seferlik tarama: `python -m backend.sync [--no-notify] [--summary dosya]`."""
     import argparse
+    import os
 
     from .database import Base, SessionLocal, engine
     from .migrate import migrate
@@ -790,7 +830,12 @@ def main(argv: list[str] | None = None) -> int:
             handle.write("## CareerPilot taraması\n\n" + summary + "\n")
     # Kaynakların tamamı hata verdiyse iş başarısız sayılır; kısmi sonuçlar başarılıdır.
     statuses = [item["status"] for item in report["results"].values()]
-    return 1 if statuses and all(status == "error" for status in statuses) else 0
+    successful_source = any(status in {"ok", "partial", "warning"} for status in statuses)
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with open(output_path, "a", encoding="utf-8") as handle:
+            handle.write(f"successful_source={'true' if successful_source else 'false'}\n")
+    return 1 if statuses and not successful_source else 0
 
 
 if __name__ == "__main__":

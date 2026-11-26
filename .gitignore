@@ -9,6 +9,9 @@ coverage/
 .env.*
 !.env.example
 .env
+careerpilot.db
+careerpilot.db-*
+careerpilot.db.backup.*
 *.pem
 *.key
 *.token

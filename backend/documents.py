@@ -12,6 +12,8 @@ import pdfplumber
 import requests
 from docx import Document
 
+from . import tls
+
 
 MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 MAX_EXTRACTED_TEXT = 1_000_000
@@ -100,9 +102,9 @@ def fetch_url(
     for _ in range(6):
         _validate_official_url(current_url)
         try:
-            client = session or requests
-            response = client.get(
+            response = tls.get(
                 current_url,
+                session=session,
                 headers=headers,
                 timeout=(8, 35),
                 allow_redirects=False,

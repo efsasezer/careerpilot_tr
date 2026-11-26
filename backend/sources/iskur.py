@@ -18,7 +18,7 @@ from .base import (
 
 
 def _parse_iskur_deadline(text: str) -> date | None:
-    match = re.search(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b", text)
+    match = re.search(r"\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b", text)
     if match:
         day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
         try:
@@ -49,6 +49,7 @@ class IskurSource(BaseJobSource):
     listing_prefix = "/ilanlar/kamu-memur-alim-ilanlari/"
 
     def fetch_listings(self) -> list[dict[str, Any]]:
+        self.fetch_warnings = []
         final_url, main_html = fetch_html(self.source_name, self.base_url)
         self.pages_checked = 1
         results: list[dict[str, Any]] = []
@@ -72,7 +73,8 @@ class IskurSource(BaseJobSource):
                 try:
                     _, city_html = fetch_html(self.source_name, city_url)
                     self.pages_checked += 1
-                except SourceFetchError:
+                except SourceFetchError as error:
+                    self.add_fetch_warning(f"{city_name} ilan sayfası alınamadı: {error}")
                     continue
 
                 tbody = re.search(r"<tbody[^>]*>(.*?)</tbody>", city_html, re.DOTALL | re.IGNORECASE)
@@ -175,12 +177,14 @@ class IskurSource(BaseJobSource):
     def fetch_detail(self, url: str) -> dict[str, Any]:
         path = urlsplit(url).path.casefold()
         if path.endswith((".pdf", ".docx")):
-            from ..documents import fetch_url
+            from ..documents import ScannedDocumentError, fetch_url
             try:
                 response = fetch_url(url)
                 return self.document_detail(
                     url, response["body"], response["content_type"], "Resmî ilan metni (İŞKUR)"
                 )
+            except ScannedDocumentError:
+                raise
             except Exception as error:
                 raise SourceFetchError(
                     self.source_name,

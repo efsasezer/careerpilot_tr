@@ -214,6 +214,10 @@ class SBBSource(BaseJobSource):
         # İlan detay bağlantıları oturuma bağlıdır: liste sayfasıyla aynı oturumdan
         # ve liste sayfası referansıyla açıldığında resmî ilan PDF'i döner.
         self._session = requests.Session()
+        self.fetch_warnings = []
+
+    def close(self) -> None:
+        self._session.close()
 
     def fetch_listings(self) -> list[dict[str, Any]]:
         final_url, html = fetch_html(self.source_name, self.base_url, session=self._session)

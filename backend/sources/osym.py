@@ -28,6 +28,11 @@ def is_placement_announcement(title: str) -> bool:
 class OsymSource(BaseJobSource):
     source_name = "ÖSYM"
     base_url = "https://www.osym.gov.tr/"
+    listing_pages = (
+        "/Duyurular/Index",
+        "/SinavGrubu/Index/3",
+        "/SinavGrubu/Index/4",
+    )
     # Tercih dönemi yokken hiç duyuru bulunmaması olağandır.
     allow_empty = True
 
@@ -42,36 +47,37 @@ class OsymSource(BaseJobSource):
         return response.url, response.text
 
     def fetch_listings(self) -> list[dict[str, Any]]:
-        final_url, html = self._get(self.base_url)
-        links, _ = parse_html_page(html)
-        self.pages_checked = 1
-        if len(links) < 20:
-            raise RuntimeError("ÖSYM ana sayfası beklenen duyuru bağlantılarını içermiyor; sayfa yapısı değişmiş olabilir.")
+        self.pages_checked = 0
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for link in links:
-            title = " ".join(link["text"].split())
-            url = absolute_url(final_url, link["href"])
-            parsed = urlsplit(url)
-            if (
-                not is_placement_announcement(title)
-                or parsed.hostname not in ("www.osym.gov.tr", "osym.gov.tr")
-                or parsed.path.casefold().endswith((".pdf", ".docx", ".xlsx"))
-                or url in seen
-            ):
-                continue
-            seen.add(url)
-            results.append(self.normalize_listing({
-                "source_key": "osym",
-                "source_name": self.source_name,
-                "source_url": self.base_url,
-                "detail_url": url,
-                "external_id": parsed.path.strip("/")[:280] or url,
-                "title": title,
-                "institution": "ÖSYM (KPSS Merkezi Yerleştirme)",
-                "recruitment_method": "KPSS merkezi yerleştirme",
-                "content_hash": content_hash(title),
-            }))
+        pages = [self.base_url, *(absolute_url(self.base_url, path) for path in self.listing_pages)]
+        for page_url in pages:
+            final_url, html = self._get(page_url)
+            links, _ = parse_html_page(html)
+            self.pages_checked += 1
+            for link in links:
+                title = " ".join(link["text"].split())
+                url = absolute_url(final_url, link["href"])
+                parsed = urlsplit(url)
+                if (
+                    not is_placement_announcement(title)
+                    or parsed.hostname not in ("www.osym.gov.tr", "osym.gov.tr")
+                    or parsed.path.casefold().endswith((".pdf", ".docx", ".xlsx"))
+                    or url in seen
+                ):
+                    continue
+                seen.add(url)
+                results.append(self.normalize_listing({
+                    "source_key": "osym",
+                    "source_name": self.source_name,
+                    "source_url": self.base_url,
+                    "detail_url": url,
+                    "external_id": parsed.path.strip("/")[:280] or url,
+                    "title": title,
+                    "institution": "ÖSYM (KPSS Merkezi Yerleştirme)",
+                    "recruitment_method": "KPSS merkezi yerleştirme",
+                    "content_hash": content_hash(title),
+                }))
         return results
 
     def fetch_detail(self, url: str) -> dict[str, Any]:

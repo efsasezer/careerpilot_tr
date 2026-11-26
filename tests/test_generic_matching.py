@@ -12,7 +12,13 @@ from backend.eligibility import build_candidate_profile, classify_public_job
 from backend.matching import build_matches
 from backend.models import CandidateProfile, Job, Notification, UserJobState
 from backend.schemas import NotificationSettings, ProfileUpdate, TrackingUpdate
-from backend.sync import _mark_cancelled, application_window_from_text, organization_key
+from backend.sync import (
+    _apply_detail,
+    _mark_cancelled,
+    application_deadline_from_text,
+    application_window_from_text,
+    organization_key,
+)
 
 UYGUN, POTANSIYEL, DEGIL = "UYGUN", "POTANSİYEL OLARAK UYGUN", "UYGUN DEĞİL"
 
@@ -144,9 +150,69 @@ def test_generic_staff_table_rows_and_continuation_pages():
 def test_application_window_and_organization_keys():
     start, end = application_window_from_text("Başvurular, 23.11.2026 - 04.12.2026 tarihleri arasında e-Devlet üzerinden yapılacaktır.")
     assert (start, end) == (date(2026, 11, 23), date(2026, 12, 4))
+
+    report_examples = (
+        ("Başvurular 07.12.2026 - 21.12.2026 tarihleri arasında yapılacaktır.", date(2026, 12, 7), date(2026, 12, 21)),
+        ("Başvurular 09/12/2026 - 11/12/2026 tarihleri arasında yapılacaktır.", date(2026, 12, 9), date(2026, 12, 11)),
+    )
+    for text, expected_start, expected_end in report_examples:
+        assert application_window_from_text(text) == (expected_start, expected_end)
+
+    assert application_window_from_text(
+        "Başvuru şekli ve zamanı\n"
+        "a) 09/12/2026 tarihinden 11/12/2026 tarihi mesai bitimine kadar yukarıda sayılan belgeler."
+    ) == (date(2026, 12, 9), date(2026, 12, 11))
+    assert application_deadline_from_text("Son başvuru tarihi: 25.11.2026") == date(2026, 11, 25)
+    assert application_deadline_from_text(
+        "c) Son başvuru tarihi (11.12.2026) itibarıyla 18 yaşını doldurmuş olmak."
+    ) == date(2026, 12, 11)
+    assert application_window_from_text("Yayım tarihi 25.11.2026. Sınav tarihi 07.12.2026.") == (None, None)
+    assert application_deadline_from_text("Yayım tarihi 25.11.2026. Sınav tarihi 07.12.2026.") is None
+
     assert organization_key("Edirne Keşan Belediyesi") == organization_key("Keşan Belediye Başkanlığı")
     assert organization_key("TÜRKİYE ŞEKER FABRİKALARI A.Ş. GENEL MÜDÜRLÜĞÜ") == organization_key("Türkiye Şeker Fabrikaları A.Ş.")
     assert organization_key("Ankara Üniversitesi") != organization_key("Ankara Sosyal Bilimler Üniversitesi")
+
+
+def test_detail_keeps_publication_and_application_dates_independent():
+    job = Job(
+        sector="public",
+        title="Personel Alımı",
+        organization="Örnek Kurum",
+        application_start=None,
+        application_deadline=None,
+        announcement_date=None,
+    )
+    _apply_detail(job, {}, {
+        "source_text": (
+            "Yayım tarihi: 25.11.2026.\n"
+            "Başvurular 07.12.2026 - 21.12.2026 tarihleri arasında yapılacaktır."
+        ),
+        "announcement_date": "25.11.2026",
+    })
+
+    assert job.announcement_date == date(2026, 11, 25)
+    assert job.application_start == date(2026, 12, 7)
+    assert job.application_deadline == date(2026, 12, 21)
+
+
+def test_detail_leaves_application_dates_null_without_application_context():
+    job = Job(
+        sector="public",
+        title="Sınav Duyurusu",
+        organization="Örnek Kurum",
+        application_start=None,
+        application_deadline=None,
+        announcement_date=None,
+    )
+    _apply_detail(job, {}, {
+        "source_text": "Yayım tarihi: 25.11.2026. Sınav tarihi: 07.12.2026.",
+        "announcement_date": "25.11.2026",
+    })
+
+    assert job.announcement_date == date(2026, 11, 25)
+    assert job.application_start is None
+    assert job.application_deadline is None
 
 
 def _database():
@@ -404,8 +470,13 @@ def test_osym_source_picks_only_placement_preference_announcements(monkeypatch):
 
     filler = "".join(f'<a href="/sayfa-{i}">Diğer duyuru {i}</a>' for i in range(25))
     pages = {
-        "https://www.osym.gov.tr/": filler + '<a href="/kpss-2026-2-tercih-islemleri">KPSS-2026/2: Tercih İşlemleri</a>'
-                                             '<a href="/kpss-siralamalar">2026 KPSS Lisans: Branş Bazında Sıralamalar</a>',
+        "https://www.osym.gov.tr/": filler,
+        "https://www.osym.gov.tr/Duyurular/Index": (
+            filler + '<a href="/kpss-2026-2-tercih-islemleri">KPSS-2026/2: Tercih İşlemleri</a>'
+            '<a href="/kpss-siralamalar">2026 KPSS Lisans: Branş Bazında Sıralamalar</a>'
+        ),
+        "https://www.osym.gov.tr/SinavGrubu/Index/3": filler,
+        "https://www.osym.gov.tr/SinavGrubu/Index/4": filler,
         "https://www.osym.gov.tr/kpss-2026-2-tercih-islemleri": (
             "<p>Tercih işlemleri 01.12.2026 - 10.12.2026 tarihleri arasında alınacaktır. " + "Adaylar tercihlerini kılavuza göre yapacaktır. " * 3 + "</p>"
             '<a href="https://dokuman.osym.gov.tr/web/2026/kpss-2026-2-tercih-kilavuzu.pdf">Tercih Kılavuzu</a>'
@@ -429,6 +500,9 @@ def test_osym_source_picks_only_placement_preference_announcements(monkeypatch):
         assert item["match"]["category"] == POTANSIYEL and item["review_required"]
         # Tercih dönemi kapanınca duyurunun kalkması uyarı sayılmaz.
         pages["https://www.osym.gov.tr/"] = filler
+        pages["https://www.osym.gov.tr/Duyurular/Index"] = filler
+        pages["https://www.osym.gov.tr/SinavGrubu/Index/3"] = filler
+        pages["https://www.osym.gov.tr/SinavGrubu/Index/4"] = filler
         assert main.sync_all_sources(db)["results"]["osym"]["status"] == "ok"
 
 

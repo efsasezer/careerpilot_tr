@@ -4,22 +4,15 @@ name: Günlük ilan taraması
 # e-posta/Telegram bildirimi gönderir. Kurulum: README_TR.md › "Otomatik günlük tarama".
 
 on:
-  schedule:
-    # Türkiye saatiyle 08:30 ve 17:30 (UTC+3)
-    - cron: "30 5 * * *"
-    - cron: "30 14 * * *"
   workflow_dispatch:
     inputs:
       deneme:
         description: "Deneme çalıştırması: veritabanını kaydetme, bildirim gönderme"
         type: boolean
-        default: false
-  pull_request:
-    paths:
-      - ".github/workflows/gunluk-tarama.yml"
+        default: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: gunluk-tarama
@@ -46,6 +39,7 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Kaynakları tara
+        id: scan
         env:
           CAREERPILOT_SOURCE_REQUEST_DELAY_SECONDS: "1"
           CAREERPILOT_APP_URL: ${{ vars.CAREERPILOT_APP_URL || 'https://careerpilot-tr-web.onrender.com' }}
@@ -63,28 +57,3 @@ jobs:
           else
             python -m backend.sync --summary "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Veritabanını kaydet
-        if: env.DENEME != 'true'
-        run: |
-          if git diff --quiet -- careerpilot.db; then
-            echo "Veritabanında değişiklik yok."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add careerpilot.db
-          git commit -m "Günlük tarama: ilan veritabanı güncellendi"
-          git push
-
-      - name: Render'da API'yi yeniden yayınla
-        if: env.DENEME != 'true'
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-        run: |
-          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
-            echo "RENDER_DEPLOY_HOOK_URL tanımlı değil; yayın adımı atlandı."
-            exit 0
-          fi
-          curl --fail --silent --show-error --max-time 60 -X POST "$RENDER_DEPLOY_HOOK_URL" > /dev/null
-          echo "Render yayını tetiklendi."

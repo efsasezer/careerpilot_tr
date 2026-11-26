@@ -1,3 +1,9 @@
+from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
+
+import pytest
+
+import backend.kariyerkapisi as kariyerkapisi
 from backend.kariyerkapisi import parse_listing_content, parse_listing_detail
 from backend.eligibility import build_candidate_profile as _build_candidate_profile, classify_public_job
 from sqlalchemy import create_engine, select
@@ -6,6 +12,130 @@ from sqlalchemy.orm import Session
 from backend import main
 from backend.database import Base
 from backend.models import CandidateProfile, Job
+
+
+def test_navigation_retries_transient_dns_errors(monkeypatch):
+    delays = []
+    monkeypatch.setattr(kariyerkapisi.time, "sleep", delays.append)
+
+    class Page:
+        calls = 0
+
+        def goto(self, _url, **_kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise RuntimeError("net::ERR_NAME_NOT_RESOLVED")
+            return "loaded"
+
+    page = Page()
+
+    assert kariyerkapisi._goto_with_retries(
+        page,
+        kariyerkapisi.URL,
+        wait_until="domcontentloaded",
+    ) == "loaded"
+    assert page.calls == 3
+    assert delays == [1.5, 3.0]
+
+
+def test_active_listing_does_not_report_persistent_dns_failure_as_empty(monkeypatch):
+    calls = []
+    monkeypatch.setattr(kariyerkapisi, "_playwright_event_loop_policy", nullcontext)
+    monkeypatch.setattr(kariyerkapisi.time, "sleep", lambda _delay: None)
+
+    class Page:
+        def route(self, *_args):
+            pass
+
+        def on(self, *_args):
+            pass
+
+        def goto(self, *_args, **_kwargs):
+            calls.append("goto")
+            raise RuntimeError("net::ERR_NAME_NOT_RESOLVED")
+
+        def close(self):
+            pass
+
+    class Browser:
+        def new_page(self, **_kwargs):
+            return Page()
+
+        def close(self):
+            pass
+
+    class Chromium:
+        def launch(self, **_kwargs):
+            return Browser()
+
+    @contextmanager
+    def fake_playwright():
+        yield SimpleNamespace(chromium=Chromium())
+
+    monkeypatch.setattr(kariyerkapisi, "sync_playwright", fake_playwright)
+
+    with pytest.raises(RuntimeError, match="3 denemede yüklenemedi"):
+        kariyerkapisi.scrape_public_active_listings()
+
+    assert calls == ["goto", "goto", "goto"]
+
+
+def test_detail_api_dns_failure_is_retried_and_not_reported_as_success(monkeypatch):
+    detail_url = "https://kariyerkapisi.gov.tr/IlanDetay?i=unavailable"
+    monkeypatch.setattr(kariyerkapisi, "_playwright_event_loop_policy", nullcontext)
+    monkeypatch.setattr(kariyerkapisi.time, "sleep", lambda _delay: None)
+    calls = []
+
+    class Response:
+        status = 200
+
+    class Page:
+        def __init__(self):
+            self.handlers = {}
+
+        def route(self, *_args):
+            pass
+
+        def on(self, event, callback):
+            self.handlers[event] = callback
+
+        def goto(self, *_args, **_kwargs):
+            calls.append("goto")
+            self.handlers["requestfailed"](SimpleNamespace(
+                url="https://api.kariyerkapisi.gov.tr/api/ilan/GetIlan",
+                failure="net::ERR_NAME_NOT_RESOLVED",
+            ))
+            return Response()
+
+        def wait_for_load_state(self, *_args, **_kwargs):
+            pass
+
+        def locator(self, *_args):
+            pytest.fail("A failed API response must not be parsed as a successful detail.")
+
+    class Browser:
+        def new_page(self, **_kwargs):
+            return Page()
+
+        def close(self):
+            pass
+
+    class Chromium:
+        def launch(self, **_kwargs):
+            return Browser()
+
+    @contextmanager
+    def fake_playwright():
+        yield SimpleNamespace(chromium=Chromium())
+
+    monkeypatch.setattr(kariyerkapisi, "sync_playwright", fake_playwright)
+
+    outcome = kariyerkapisi.scrape_public_listing_details([{"url": detail_url}])[detail_url]
+
+    assert calls == ["goto", "goto", "goto"]
+    assert outcome["details"]["source_text"] == ""
+    assert "api.kariyerkapisi.gov.tr" in outcome["error"]
+    assert "ERR_NAME_NOT_RESOLVED" in outcome["error"]
 
 
 def build_candidate_profile():
