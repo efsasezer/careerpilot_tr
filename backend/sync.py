@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import clock
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 import json
@@ -26,6 +27,7 @@ from .eligibility import (
 from .events import refresh_all_events, sync_job_events
 from .kariyerkapisi import _label_values
 from .models import Job, JobDocument, JobDocumentScan, SourceListing, SourceSyncHistory, UserVerification
+from .sources.base import classify_error
 from .sources.registry import get_source_registry
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,62 @@ def application_deadline_from_text(text: str) -> date | None:
             if nearby:
                 return parse_turkish_date(nearby[0].group())
     return None
+
+
+_MONTH_NAMES = "ocak|subat|mart|nisan|mayis|haziran|temmuz|agustos|eylul|ekim|kasim|aralik"
+_WORDED_POINTS = re.compile(
+    rf"(?<!\d)(\d{{1,2}})\s*[-–]\s*(\d{{1,2}})\s+({_MONTH_NAMES})\s+(20\d{{2}})"            # 1-7 Aralık 2026
+    rf"|(?<!\d)(\d{{1,2}})\s+({_MONTH_NAMES})\s*[-–]\s*(\d{{1,2}})\s+({_MONTH_NAMES})\s+(20\d{{2}})"  # 16 Kasım - 4 Aralık 2026
+    rf"|(?<!\d)(\d{{1,2}})\s+({_MONTH_NAMES})\s+(20\d{{2}})"                                   # 3 Kasım 2026
+    rf"|(?<!\d)(\d{{1,2}})\s*[./]\s*(\d{{1,2}})\s*[./]\s*(20\d{{2}})(?!\d)"                    # 03.11.2026
+)
+_NOT_APPLICATION = ("ucret", "itiraz", "sonuc", "dogmus", "dogumlu", "mezun", "sayili", "resmi gazete", "yasini")
+_WINDOW_CUE = ("arasinda", "baslayip", "baslayacak", "baslar", "sona er", "bitecek", "kadar", " - ", "–", "ile ")
+_DEADLINE_CUE = ("son basvuru", "sona er", "kadar", "bitis", "son gun", "son muracaat")
+
+
+def _date_points(normalized: str) -> list[date]:
+    """Cümledeki tarih noktaları; "1-7 Aralık 2026" gibi aralıklar iki noktaya açılır."""
+    months = _MONTH_NAMES.split("|")
+    points: list[date | None] = []
+    for match in _WORDED_POINTS.finditer(normalized):
+        g = match.groups()
+        if g[0]:
+            month, year = months.index(g[2]) + 1, int(g[3])
+            points += [_safe_date(year, month, int(g[0])), _safe_date(year, month, int(g[1]))]
+        elif g[4]:
+            year = int(g[8])
+            first_month, second_month = months.index(g[5]) + 1, months.index(g[7]) + 1
+            points += [_safe_date(year - 1 if first_month > second_month else year, first_month, int(g[4])),
+                       _safe_date(year, second_month, int(g[6]))]
+        elif g[9]:
+            points.append(_safe_date(int(g[11]), months.index(g[10]) + 1, int(g[9])))
+        else:
+            points.append(_safe_date(int(g[14]), int(g[13]), int(g[12])))
+    return [point for point in points if point]
+
+
+def worded_application_window(text: str) -> tuple[date | None, date | None]:
+    """Ay adıyla ya da "başlayıp ... sona erecektir" biçiminde yazılmış başvuru dönemini okur.
+
+    Yalnızca başvurudan söz eden, ücret/itiraz/sonuç içermeyen cümleler kullanılır. Cümlede tam iki
+    tarih ve bir aralık ifadesi varsa (başlangıç, bitiş); tek tarih ve "son başvuru / kadar" ifadesi
+    varsa yalnızca bitiş döner. Birden çok başvuru dönemi sayan cümlelerden tarih seçilmez.
+    """
+    for sentence in _sentences(reflow_text(text or "")):
+        normalized = normalize_text(sentence)
+        if len(normalized) > 500 or not any(word in normalized for word in ("basvuru", "muracaat")):
+            continue
+        if any(word in normalized for word in _NOT_APPLICATION):
+            continue
+        points = _date_points(normalized)
+        if len(points) == 2 and any(cue in normalized for cue in _WINDOW_CUE):
+            start, end = points
+            if start <= end and (end - start).days <= 120:
+                return start, end
+        elif len(points) == 1 and any(cue in normalized for cue in _DEADLINE_CUE):
+            return None, points[0]
+    return None, None
 
 
 def organization_key(value: str) -> str:
@@ -207,6 +265,9 @@ def _apply_detail(job: Job, item: dict, details: dict) -> bool:
     end_text = details.get("end_date") or labels.get("end_date")
     text_start, text_end = application_window_from_text(text)
     text_deadline = application_deadline_from_text(text)
+    if text_end is None and text_deadline is None:
+        worded_start, worded_end = worded_application_window(text)
+        text_start, text_end = text_start or worded_start, worded_end
     changed |= _set(job, "application_start", parse_turkish_date(start_text) or text_start, overwrite=False)
     changed |= _set(
         job, "application_deadline",
@@ -288,6 +349,21 @@ def _store_unread_attachment(db: Session, job: Job, attachment: dict, checked_at
         scan.checked_at = checked_at
 
 
+def _retire_unrelated_documents(db: Session, job: Job, details: dict) -> None:
+    """Kaynak bu ilanın eklerinin tam listesini verdiyse, listede olmayan eski belge kayıtlarını devre dışı bırakır.
+
+    Eski sürümler sayfanın menüsündeki ilgisiz bağlantıları da ek belge saymıştı. Kayıt silinmez;
+    durumu "obsolete" olur ve metni uygunluk ile tarih çıkarımında kullanılmaz.
+    """
+    current = details.get("attachment_urls")
+    if current is None:
+        return
+    keep = {str(url) for url in current}
+    for record in db.scalars(select(JobDocument).where(JobDocument.job_id == job.id)).all():
+        if record.document_url not in keep and record.status != "obsolete":
+            record.status = "obsolete"
+
+
 def _role_words(title: str) -> set[str]:
     normalized = normalize_text(title)
     roles = {word for word in ("zabita", "itfaiye", "sozlesmeli", "isci") if word in normalized}
@@ -327,13 +403,13 @@ def _mark_cancelled(db: Session, source_name: str, item: dict) -> int:
         for job in matching:
             job.status = "İptal edildi"
             job.cancellation_notice = f"{source_name}: {title}"[:400]
-            job.updated_at = datetime.now()
+            job.updated_at = clock.now()
         return len(matching)
     for job in candidates:
         notice = f"{source_name}: {title}"[:400]
         if job.cancellation_notice != notice:
             job.cancellation_notice = notice
-            job.updated_at = datetime.now()
+            job.updated_at = clock.now()
     return 0
 
 
@@ -341,7 +417,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
     """Tek kaynağı tarar; hata durumunda mevcut kayıtlara dokunmaz."""
     delay = config.source_request_delay() if delay is None else delay
     source_name = source.source_name
-    checked_at = datetime.now()
+    checked_at = clock.now()
     report = {
         "status": "ok", "source": source_name, "pages_checked": 0, "found": 0, "imported": 0,
         "updated": 0, "unchanged": 0, "detail_failed": 0, "cancelled": 0, "error": None,
@@ -350,6 +426,9 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
     fetch_warnings: list[str] = []
     rejected_job_ids = set(db.scalars(select(UserVerification.job_id).where(
         UserVerification.position_id == "", UserVerification.decision == "not_eligible",
+    )).all())
+    retry_document_job_ids = set(db.scalars(select(JobDocument.job_id).where(
+        JobDocument.status == "unavailable", JobDocument.checked_at < checked_at - timedelta(hours=20),
     )).all())
     try:
         listings = source.fetch_listings()
@@ -412,9 +491,14 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
             listing.last_checked_at = checked_at
 
             # Taranmış ve OCR'la da okunamayan belge her taramada yeniden denenmez ("OCR'la yeniden dene" ile denenir).
+            still_open = job.application_deadline is None or job.application_deadline >= clock.today()
             needs_detail = (
                 job.id not in rejected_job_ids
-                and (created or listing.list_hash != list_hash or listing.status not in ("complete", "unreadable"))
+                and (
+                    created or listing.list_hash != list_hash or listing.status not in ("complete", "unreadable")
+                    # Eki daha önce indirilemeyen açık ilan, günde en çok bir kez yeniden denenir.
+                    or (job.id in retry_document_job_ids and still_open)
+                )
             )
             if needs_detail:
                 try:
@@ -427,6 +511,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
                         _store_document(db, job, details["document"], checked_at)
                     for attachment in details.get("unread_attachments") or []:
                         _store_unread_attachment(db, job, attachment, checked_at)
+                    _retire_unrelated_documents(db, job, details)
                     listing.content_hash = str(details.get("content_hash") or "")[:64]
                     listing.status = "complete"
                     listing.raw_payload = json.dumps(
@@ -471,6 +556,7 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         # so the source card and sync history still explain what actually failed.
         detail = str(error).strip() or f"{type(error).__name__} (hata iletisi boş)"
         report["error"] = detail[:500]
+        report["error_kind"] = classify_error(error)
         logger.warning("Source %s failed: %s", source_key, detail)
 
     finally:
@@ -485,10 +571,130 @@ def sync_source(db: Session, source_key: str, source, *, delay: float | None = N
         source_key=source_key, source_name=source_name, status=report["status"], checked_at=checked_at,
         pages_checked=report["pages_checked"], found=report["found"], imported=report["imported"],
         updated=report["updated"], unchanged=report["unchanged"], detail_failed=report["detail_failed"],
-        error=summary_error or "",
+        error=summary_error or "", error_kind=report.get("error_kind", ""), origin=config.scan_origin(),
     ))
     db.commit()
     return report
+
+
+# ---------------------------------------------------------------------------
+# Tarama kilidi: aynı veritabanına yazan bütün tarayıcılar için tek seferde tek tarama
+# ---------------------------------------------------------------------------
+
+LOCK_NAME = "source-sync"
+LOCK_LEASE = timedelta(minutes=20)
+
+
+def acquire_scan_lock(db: Session, owner: str, *, now: datetime | None = None) -> bool:
+    """Kilidi alır; başka bir tarama sürüyorsa False döner. Süresi dolmuş (sahibi çökmüş) kilit devralınır."""
+    from sqlalchemy import update
+    from sqlalchemy.exc import IntegrityError
+
+    from .models import ScanLock
+
+    now = now or clock.now()
+    taken = db.execute(
+        update(ScanLock).where(ScanLock.name == LOCK_NAME, ScanLock.expires_at < now)
+        .values(owner=owner, acquired_at=now, expires_at=now + LOCK_LEASE)
+    ).rowcount
+    if taken:
+        db.commit()
+        return True
+    if db.get(ScanLock, LOCK_NAME) is not None:
+        db.rollback()
+        return False
+    try:
+        db.add(ScanLock(name=LOCK_NAME, owner=owner, acquired_at=now, expires_at=now + LOCK_LEASE))
+        db.commit()
+        return True
+    except IntegrityError:  # aynı anda başka bir süreç ekledi
+        db.rollback()
+        return False
+
+
+def extend_scan_lock(db: Session, owner: str) -> None:
+    from sqlalchemy import update
+
+    from .models import ScanLock
+
+    db.execute(update(ScanLock).where(ScanLock.name == LOCK_NAME, ScanLock.owner == owner)
+               .values(expires_at=clock.now() + LOCK_LEASE))
+    db.commit()
+
+
+def release_scan_lock(db: Session, owner: str) -> None:
+    from sqlalchemy import delete
+
+    from .models import ScanLock
+
+    db.rollback()
+    db.execute(delete(ScanLock).where(ScanLock.name == LOCK_NAME, ScanLock.owner == owner))
+    db.commit()
+
+
+def backfill_application_dates(db: Session) -> int:
+    """Başvuru tarihi boş kalan ilanlarda tarihi, saklanan ilan metninden ve belgelerinden yeniden arar.
+
+    Yalnızca boş alan doldurulur; kaynağın verdiği ya da daha önce bulunan tarih değiştirilmez.
+    """
+    filled = 0
+    jobs = db.scalars(select(Job).where(
+        Job.sector == "public", Job.archived_reason == "", Job.application_deadline.is_(None),
+    )).all()
+    for job in jobs:
+        documents = db.scalars(select(JobDocument).where(JobDocument.job_id == job.id)).all()
+        text = "\n".join(filter(None, [job.description or "", *[
+            document.extracted_text for document in documents
+            if document.extracted_text and document.ocr_confidence is None and document.status != "obsolete"
+        ]]))
+        if len(text) < 80:
+            continue
+        start, end = application_window_from_text(text)
+        end = end or application_deadline_from_text(text)
+        if end is None:
+            worded_start, end = worded_application_window(text)
+            start = start or worded_start
+        if end is None:
+            continue
+        job.application_deadline = end
+        if job.application_start is None and start is not None and start <= end:
+            job.application_start = start
+        job.updated_at = clock.now()
+        filled += 1
+    if filled:
+        db.commit()
+    return filled
+
+
+class ScanAlreadyRunning(RuntimeError):
+    pass
+
+
+def run_sync_locked(db: Session, *, on_progress=None, **kwargs) -> dict:
+    """Kilit altında tarama. Başka bir tarama (başka bir sunucuda bile olsa) sürüyorsa ScanAlreadyRunning."""
+    import os
+    import socket
+
+    owner = f"{config.scan_origin()}:{socket.gethostname()}:{os.getpid()}:{time.time():.0f}"[:120]
+    if not acquire_scan_lock(db, owner):
+        raise ScanAlreadyRunning("Başka bir tarama zaten sürüyor.")
+    last_beat = time.monotonic()
+
+    def progress(source: str, current: int, total: int) -> None:
+        nonlocal last_beat
+        if time.monotonic() - last_beat > 60:
+            last_beat = time.monotonic()
+            try:
+                extend_scan_lock(db, owner)
+            except Exception:  # kira uzatılamazsa tarama sürer; kilit süresi dolunca boşalır
+                db.rollback()
+        if on_progress:
+            on_progress(source, current, total)
+
+    try:
+        return run_sync(db, on_progress=progress, **kwargs)
+    finally:
+        release_scan_lock(db, owner)
 
 
 def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, scan_documents: bool = True,
@@ -511,7 +717,7 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
             scan.job_id for scan in db.scalars(select(JobDocumentScan).where(JobDocumentScan.status == "complete")).all()
         }
         touched = {job_id for report in results.values() for job_id in report["touched_job_ids"]}
-        today = date.today()
+        today = clock.today()
         jobs = [
             job for job in db.scalars(select(Job).where(Job.sector == "public").order_by(Job.id)).all()
             if job.source_name in document_sources
@@ -530,6 +736,7 @@ def run_sync(db: Session, *, registry: dict | None = None, on_progress=None, sca
 
     from .matching import invalidate_cache
 
+    backfill_application_dates(db)
     refresh_all_events(db)
     invalidate_cache()
     # Sonuç duyuruları ve duyuru akışları (YLSY) her taramanın parçasıdır.
@@ -598,7 +805,7 @@ def refetch_job(db: Session, job: Job) -> dict:
         details = source.fetch_detail(_fresh_detail_url(source, listing))
         if len(str(details.get("source_text") or "").strip()) < 80:
             raise ValueError("Ayrıştırılabilir ilan metni bulunamadı.")
-        now = datetime.now()
+        now = clock.now()
         _apply_detail(job, {}, details)
         job.updated_at = now
         db.flush()
@@ -719,7 +926,7 @@ class SyncManager:
             if self.state["running"]:
                 return False
             self.state.update(
-                running=True, trigger=trigger, started_at=datetime.now().isoformat(timespec="seconds"),
+                running=True, trigger=trigger, started_at=clock.now().isoformat(timespec="seconds"),
                 finished_at=None, progress={"source": "Hazırlanıyor", "current": 0, "total": 0}, error=None,
             )
         self._thread = threading.Thread(target=self._run, name="careerpilot-sync", daemon=True)
@@ -734,13 +941,15 @@ class SyncManager:
 
         try:
             with SessionLocal() as db:
-                self.state["report"] = run_sync(db, on_progress=self._progress)
+                self.state["report"] = run_sync_locked(db, on_progress=self._progress)
+        except ScanAlreadyRunning as running:
+            self.state["error"] = f"{running} Bittiğinde sonuçlar burada görünecek."
         except Exception as error:  # pragma: no cover - beklenmeyen hata durumunu kullanıcıya göster
             logger.exception("Sync run failed")
             self.state["error"] = str(error)[:500]
         finally:
             self.state.update(
-                running=False, progress=None, finished_at=datetime.now().isoformat(timespec="seconds"),
+                running=False, progress=None, finished_at=clock.now().isoformat(timespec="seconds"),
             )
 
     # ---- otomatik tarama ----
@@ -766,7 +975,7 @@ class SyncManager:
             try:
                 with SessionLocal() as db:
                     last = db.scalar(select(SourceSyncHistory.checked_at).order_by(SourceSyncHistory.checked_at.desc()).limit(1))
-                due = last is None or datetime.now() - last >= timedelta(hours=interval_hours)
+                due = last is None or clock.now() - last >= timedelta(hours=interval_hours)
                 if due:
                     self.start("auto")
             except Exception:  # pragma: no cover
@@ -799,7 +1008,11 @@ def main(argv: list[str] | None = None) -> int:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         cleanup_legacy_rows(db)
-        report = run_sync(db)
+        try:
+            report = run_sync_locked(db)
+        except ScanAlreadyRunning as running:
+            print(str(running))
+            return 0
 
     lines = ["| Kaynak | Durum | Bulunan | Yeni | Güncellenen | Okunamayan | Not |", "|---|---|---|---|---|---|---|"]
     for item in report["results"].values():

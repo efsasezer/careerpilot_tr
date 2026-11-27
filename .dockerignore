@@ -1,0 +1,12 @@
+.git
+.venv
+frontend
+tests
+node_modules
+*.backup.*
+careerpilot_backup_*.db
+.env
+.env.*
+__pycache__
+*.pyc
+data

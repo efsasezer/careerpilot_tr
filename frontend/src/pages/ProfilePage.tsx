@@ -127,6 +127,9 @@ export default function ProfilePage() {
             </Section>
 
             <Section title="KPSS puanları" help="Sahip olduğunuz bütün puan türlerini girin; ilan hangi türü istiyorsa o puanınız kullanılır.">
+              <Field label="KPSS sınav yılı" help="İlanlar çoğunlukla belirli bir yılın sonucunu ister (ör. 2026 KPSS). Boşsa bu şart “doğrulanmalı” kalır.">
+                <input type="number" min={2010} max={2100} value={draft.kpss_year ?? ""} onChange={(event) => set("kpss_year", numberOrNull(event.target.value))} />
+              </Field>
               <div className="score-rows">
                 {scores.map((row, index) => (
                   <div className="score-row" key={index}>

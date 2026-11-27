@@ -24,6 +24,18 @@ def sync_interval_hours() -> float:
     return max(0.0, env_float("CAREERPILOT_SYNC_INTERVAL_HOURS", 0.0))
 
 
+def scan_origin() -> str:
+    """Taramanın çalıştığı ortamın adı; kaynak geçmişinde ve Kaynaklar sayfasında gösterilir."""
+    explicit = os.getenv("CAREERPILOT_SCAN_ORIGIN", "").strip()
+    if explicit:
+        return explicit[:60]
+    if os.getenv("RENDER"):
+        return "Render sunucusu"
+    if os.getenv("GITHUB_ACTIONS"):
+        return "GitHub Actions"
+    return "Yerel bilgisayar"
+
+
 def source_request_delay() -> float:
     return max(0.0, env_float("CAREERPILOT_SOURCE_REQUEST_DELAY_SECONDS", 0.75))
 

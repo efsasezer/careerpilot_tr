@@ -50,6 +50,15 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
                     <input type="number" min={0} max={30} value={draft.deadline_reminder_days} onChange={(event) => set("deadline_reminder_days", Number(event.target.value) || 0)} />
                     <small>0 yazarsanız hatırlatma gönderilmez.</small>
                   </label>
+                  <p className="muted">Hangi hatırlatmalar oluşturulsun?</p>
+                  {([
+                    ["remind_application_start", "Başvuru başlarken"], ["remind_deadline", "Son başvuru yaklaşırken"],
+                    ["remind_exam", "Sınav ve mülakat yaklaşırken"], ["remind_result", "Sonuç tarihi yaklaşırken"],
+                    ["remind_other", "Evrak teslimi, atama ve diğer tarihler"], ["notify_results", "Sonuç duyurusu bulunduğunda"],
+                    ["notify_announcements", "Yeni YLSY / 1416 duyurusunda"],
+                  ] as const).map(([key, label]) => (
+                    <label className="check-field" key={key}><input type="checkbox" checked={draft[key] ?? true} onChange={(event) => set(key, event.target.checked)} /> {label}</label>
+                  ))}
                 </div>
               </section>
 

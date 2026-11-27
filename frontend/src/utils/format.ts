@@ -16,6 +16,9 @@ export function formatTimestamp(value: string | null | undefined, missingLabel =
     : new Intl.DateTimeFormat("tr-TR", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
+export const DECISION_LABEL = { eligible: "Uygun", unsure: "Potansiyel uygun", not_eligible: "Uygun değil" } as const;
+export const DECISION_CATEGORY = { eligible: "UYGUN", unsure: "POTANSİYEL OLARAK UYGUN", not_eligible: "UYGUN DEĞİL" } as const;
+
 export const CATEGORY_LABEL: Record<MatchCategory, string> = {
   UYGUN: "Uygun",
   "POTANSİYEL OLARAK UYGUN": "Doğrulanmalı",

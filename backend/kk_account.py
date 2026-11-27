@@ -15,6 +15,7 @@ olarak gösterilir.
 
 from __future__ import annotations
 
+from . import clock
 from datetime import date, datetime
 from hashlib import sha256
 import json
@@ -138,7 +139,7 @@ def store_records(db: Session, records: list[dict], now: datetime | None = None)
     """Kayıtları ekler ya da günceller; aynı kayıt ikinci kez eklenmez."""
     from .matching import invalidate_cache
 
-    now = now or datetime.now()
+    now = now or clock.now()
     report = {"new": 0, "updated": 0, "matched": 0, "needs_review": 0, "unmatched": 0}
     for record in records:
         key = fingerprint(record)
@@ -296,7 +297,7 @@ def run_import(on_status=None) -> dict:
     outcome = read_account(on_status=on_status)
     with SessionLocal() as db:
         state = load_state(db)
-        now = datetime.now().isoformat(timespec="seconds")
+        now = clock.now().isoformat(timespec="seconds")
         summary = {"at": now, "sections": outcome["sections"], "error": outcome.get("error")}
         read_ok = [name for name, info in outcome["sections"].items() if info["status"] in ("ok", "empty")]
         if outcome["records"]:

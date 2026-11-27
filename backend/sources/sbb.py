@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .. import clock
 from datetime import date
 from html.parser import HTMLParser
 import re
@@ -132,7 +133,7 @@ def parse_sbb_listing_label(
     current_date: date | None = None,
 ) -> dict[str, Any]:
     """Parse only fields explicitly present in an SBB listing label."""
-    current_date = current_date or date.today()
+    current_date = current_date or clock.today()
     text = " ".join((label or "").split())
     range_match = _DATE_RANGE.search(text)
     heading = text[:range_match.start()].strip(" ()") if range_match else text

@@ -10,6 +10,7 @@ Kurallar:
 
 from __future__ import annotations
 
+from . import clock
 from datetime import date, datetime, timedelta
 import re
 
@@ -27,7 +28,36 @@ EVENT_LABELS = {
     "result": "Sonuç açıklanacak",
     "documents": "Evrak teslimi",
     "appointment": "Atama",
+    "start_work": "Göreve başlama",
 }
+# Açık "etiket + tarih" kalıpları (ilan takvimi tabloları). Bir cümlede birden çok etiket olabilir;
+# her etiket yalnızca hemen ardından gelen tarihe bağlanır.
+_LABELLED = (
+    ("interview", r"(?:sozlu sinav|mulakat|sozlu mulakat)\w*(?: yeri ve)? tarihi?"),
+    ("exam", r"(?:giris sinavi|yazili sinav\w*|uygulamali sinav\w*|sinava? giris|sinav\w*)(?: yeri ve)? tarihi?"),
+    ("exam", r"giris sinavi"),
+    ("documents", r"(?:evrak|belge) teslim\w* (?:son )?tarihi?"),
+    ("start_work", r"(?:goreve|ise) baslama tarihi?"),
+)
+_LABELLED_PATTERNS = [(kind, re.compile(pattern + r"(?: ve saati)?\s*[:\-–]?\s*")) for kind, pattern in _LABELLED]
+
+
+def _labelled_dates(normalized: str) -> list[tuple[str, date, str]]:
+    """("exam", tarih, saat) üçlüleri: etiketin hemen ardından (en çok 12 karakter sonra) gelen tarih."""
+    dated = _dates(normalized)
+    found: list[tuple[str, date, str]] = []
+    taken: set[int] = set()
+    for kind, pattern in _LABELLED_PATTERNS:
+        for match in pattern.finditer(normalized):
+            if kind == "exam" and ("sonuc" in normalized[max(0, match.start() - 4):match.end() + 8] or normalized[max(0, match.start() - 7):match.start()].strip().endswith(("sozlu", "mulakat"))):
+                continue
+            following = next(((value, start) for value, start in dated if match.end() <= start <= match.end() + 12), None)
+            if following is None or following[1] in taken:
+                continue
+            taken.add(following[1])
+            next_date = next((start for _, start in dated if start > following[1]), len(normalized))
+            found.append((kind, following[0], _time(normalized[following[1]:min(next_date, following[1] + 40)])))
+    return found
 _MONTHS = {
     "ocak": 1, "subat": 2, "mart": 3, "nisan": 4, "mayis": 5, "haziran": 6, "temmuz": 7,
     "agustos": 8, "eylul": 9, "ekim": 10, "kasim": 11, "aralik": 12,
@@ -40,6 +70,7 @@ _URL = re.compile(r"(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:gov|
 _IGNORED_CONTEXT = (
     "sayili", "resmi gazete", "dogmus", "dogumlu", "yasini", "yas sarti", "kanun", "yonetmelik",
     "itibariyla gecerli", "tarihinden once", "mezun ol", "kpss sonuc belgesi", "yilinda yapilan",
+    "ucretini", "ucreti ", "ucretinin",  # sınav ücreti ödeme tarihleri sınav tarihi değildir
 )
 
 
@@ -75,11 +106,13 @@ def _kind(normalized: str) -> str | None:
     has = lambda *words: any(word in normalized for word in words)  # noqa: E731
     if any(word in normalized for word in _IGNORED_CONTEXT):
         return None
-    if has("sonuc") and has("aciklan", "ilan edil", "duyurul", "yayimlan", "yayinlan", "sonuc ilan tarihi", "sonuclari ilan", "sonucu ilan"):
+    if has("hak kazanan", "cagrilacak aday", "sinava girecek aday") and has("ilan", "duyurul", "aciklan", "yayimlan", "web say", "internet"):
+        return "result"
+    if has("sonuc") and has("aciklan", "ilan edil", "duyurul", "yayimlan", "yayinlan", "ilan tarihi", "sonuclari ilan", "sonucu ilan", "sonuc tarihi", "sonuclari tarihi", "sonuc aciklama", "aciklanma"):
         return "result"
     if has("sozlu", "mulakat") and has("yapilacak", "tarih", "gerceklestiril", "alinacak"):
         return "interview"
-    if has("sinav") and has("yapilacak", "sinav tarihi", "gerceklestiril", "tarihinde", "tarihleri arasinda") and not has("sonuc", "basvuru"):
+    if has("sinav") and has("yapilacak", "sinav tarihi", "gerceklestiril", "tarihinde", "tarihleri arasinda") and not has("sonuc", "basvurular ", "basvuru tarih", "son basvuru", "basvuru sure", "basvurusu"):
         return "exam"
     if has("evrak", "belge teslim", "belgelerin teslim", "belgelerini teslim") and has("teslim"):
         return "documents"
@@ -104,10 +137,20 @@ def _result_dates(normalized: str) -> list[tuple[date, str]]:
     """
     dated = _dates(normalized)
     found: list[tuple[date, str]] = []
-    for match in re.finditer(r"sonuc", normalized):
+    for match in re.finditer(r"sonuc|hak kazanan", normalized):
         position = match.start()
         chosen = None
         after = next(((value, start) for value, start in dated if start > position), None)
+        if match.group() == "hak kazanan":
+            # "Sınava girmeye hak kazanan adaylar ... 09/12/2026 tarihinde ... ilan edilecektir."
+            between = normalized[position:after[1]] if after else ""
+            if after and (
+                (after[1] - position <= 240 and "tarihinde" in normalized[after[1]:after[1] + 24])
+                or (after[1] - position <= 70 and "ilan" in between)
+            ):
+                if after[0] not in [value for value, _ in found]:
+                    found.append((after[0], "Sınava girmeye hak kazananlar"))
+            continue
         if after and after[1] - position <= 110 and not any(label in normalized[position:after[1]] for label in _OTHER_LABEL):
             chosen = after[0]
         if chosen is None:
@@ -126,7 +169,7 @@ def _result_dates(normalized: str) -> list[tuple[date, str]]:
 
 def extract_events(text: str, *, today: date | None = None) -> list[dict]:
     """Metinden (kind, date, time, end_date, evidence, url) olayları çıkarır."""
-    today = today or date.today()
+    today = today or clock.today()
     earliest, latest = today - timedelta(days=120), today + timedelta(days=730)
     events: list[dict] = []
     seen: set[tuple] = set()
@@ -134,6 +177,15 @@ def extract_events(text: str, *, today: date | None = None) -> list[dict]:
         if len(sentence) > 700:
             continue
         normalized = normalize_text(sentence)
+        evidence = " ".join(sentence.split())[:500]
+        if not any(word in normalized for word in _IGNORED_CONTEXT):
+            for labelled_kind, value, time_text in _labelled_dates(normalized):
+                if earliest <= value <= latest and (labelled_kind, value) not in seen:
+                    seen.add((labelled_kind, value))
+                    events.append({
+                        "kind": labelled_kind, "date": value, "end_date": None, "time": time_text, "title": "",
+                        "evidence": evidence, "url": "", "method": "label", "confidence": "high",
+                    })
         kind = _kind(normalized)
         if kind is None:
             continue
@@ -148,9 +200,12 @@ def extract_events(text: str, *, today: date | None = None) -> list[dict]:
                 seen.add((kind, value))
                 events.append({
                     "kind": kind, "date": value, "end_date": None, "time": "", "title": label,
-                    "evidence": " ".join(sentence.split())[:500], "url": url[:1000],
+                    "evidence": evidence, "url": url[:1000],
+                    "method": "label" if label else "sentence", "confidence": "high" if label else "medium",
                 })
             continue
+        if any(item["kind"] == kind and item["evidence"] == evidence and item["method"] == "label" for item in events):
+            continue  # bu cümlede aynı tür için açık etiketli tarih bulundu; tahmine gerek yok
         dates = [value for value, _ in _dates(normalized) if earliest <= value <= latest]
         if not dates:
             continue
@@ -164,7 +219,7 @@ def extract_events(text: str, *, today: date | None = None) -> list[dict]:
         seen.add(key)
         events.append({
             "kind": kind, "date": start, "end_date": end, "time": _time(normalized), "title": "",
-            "evidence": " ".join(sentence.split())[:500], "url": "",
+            "evidence": evidence, "url": "", "method": "sentence", "confidence": "medium",
         })
     return events
 
@@ -187,7 +242,7 @@ def _application_evidence(text: str, target: date) -> tuple[str, str]:
 def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict:
     """İlanın otomatik olaylarını günceller; kullanıcı düzenlemelerine dokunmaz."""
     documents = db.scalars(select(JobDocument).where(JobDocument.job_id == job.id)).all()
-    readable = [doc.extracted_text for doc in documents if doc.extracted_text and doc.ocr_confidence is None]
+    readable = [doc.extracted_text for doc in documents if doc.extracted_text and doc.ocr_confidence is None and doc.status != "obsolete"]
     text = "\n".join(filter(None, [job.description or "", *[t for t in readable if t[:200] not in (job.description or "")]]))
 
     wanted: list[dict] = []
@@ -195,7 +250,8 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
         if value:
             evidence, time_text = _application_evidence(text, value)
             wanted.append({"kind": kind, "date": value, "end_date": None, "time": time_text,
-                           "evidence": evidence or "Kaynağın ilan listesindeki başvuru tarihi.", "url": "", "title": ""})
+                           "evidence": evidence or "Kaynağın ilan listesindeki başvuru tarihi.", "url": "", "title": "",
+                           "method": "sentence" if evidence else "listing", "confidence": "high"})
     if job.status != "İptal edildi":
         wanted.extend(extract_events(text, today=today))
 
@@ -207,7 +263,7 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
     by_kind: dict[str, list[JobEvent]] = {}
     for event in existing:
         by_kind.setdefault(event.kind, []).append(event)
-    now = datetime.now()
+    now = clock.now()
     changed = created = 0
     kept: set[int] = set()
     for item in wanted:
@@ -222,6 +278,7 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
                 same.evidence, same.url = item["evidence"], item["url"] or same.url
                 same.event_time, same.end_date = item["time"], item["end_date"]
                 same.title = item.get("title", "") or same.title
+                same.method, same.confidence = item.get("method", ""), item.get("confidence", "")
             continue
         # Aynı türde tek bir otomatik olay varsa ve tarihi değiştiyse: eski değer saklanır.
         movable = [event for event in candidates if event.id not in kept and not event.user_edited and not event.deleted]
@@ -233,11 +290,13 @@ def sync_job_events(db: Session, job: Job, *, today: date | None = None) -> dict
             event.end_date, event.event_time = item["end_date"], item["time"]
             event.evidence, event.url, event.updated_at = item["evidence"], item["url"], now
             event.title = item.get("title", "")
+            event.method, event.confidence = item.get("method", ""), item.get("confidence", "")
             changed += 1
             continue
         event = JobEvent(
             job_id=job.id, kind=item["kind"], event_date=item["date"], end_date=item["end_date"], event_time=item["time"],
             evidence=item["evidence"], url=item["url"], source="auto", updated_at=now, title=item.get("title", ""),
+            method=item.get("method", ""), confidence=item.get("confidence", ""),
         )
         db.add(event)
         db.flush()

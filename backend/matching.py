@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import clock
 from datetime import date
 from hashlib import sha256
 import json
@@ -100,7 +101,7 @@ def decompose_job_positions(job: Job, documents: list[JobDocument], positions_by
         # Kadro tablosu ayrıştırılamadıysa ek belgelerin metni de değerlendirmeye katılır.
         extra = [
             document.extracted_text for document in documents
-            if document.extracted_text and document.extracted_text[:200] not in base["description"]
+            if document.extracted_text and document.status != "obsolete" and document.extracted_text[:200] not in base["description"]
         ]
         if extra:
             base["description"] = "\n".join(filter(None, (base["description"], *extra)))[:120_000]
@@ -262,7 +263,7 @@ def _duplicate_groups(jobs: list[Job]) -> tuple[set[int], dict[int, list[Job]]]:
     return hidden, copies
 
 
-DECISION_CATEGORY = {"eligible": "UYGUN", "not_eligible": "UYGUN DEĞİL"}
+DECISION_CATEGORY = {"eligible": "UYGUN", "unsure": "POTANSİYEL OLARAK UYGUN", "not_eligible": "UYGUN DEĞİL"}
 
 
 def job_content_version(job: Job, documents: list[JobDocument], positions_by_document: dict) -> tuple[str, dict]:
@@ -352,7 +353,7 @@ def build_matches(db: Session, *, full: bool = True, today: date | None = None, 
 
     full=False olduğunda uzun metinler (ilan açıklaması, belge incelemesi) yanıta eklenmez.
     """
-    today = today or date.today()
+    today = today or clock.today()
     stored_profile = db.get(CandidateProfile, 1)
     cache_key = None
     if only_job_ids is None:

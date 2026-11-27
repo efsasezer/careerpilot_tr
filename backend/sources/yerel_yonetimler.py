@@ -189,6 +189,8 @@ class YerelYonetimlerSource(BaseJobSource):
             "content_hash": content_hash(source_text),
             "detail_url": final_url,
         }
+        # Bu duyurunun gerçek ekleri: eski taramalardan kalan ilgisiz belge kayıtları bunlarla ayıklanır.
+        result["attachment_urls"] = [attachment["url"] for attachment in attachments]
         if document is not None:
             result["document"] = document
         if unread_attachments:

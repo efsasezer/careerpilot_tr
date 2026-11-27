@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bookmark, CalendarPlus, CheckCheck, ExternalLink, EyeOff, FileText, Trash2, X } from "lucide-react";
+import { Bell, BellOff, Bookmark, CalendarPlus, CheckCheck, ExternalLink, EyeOff, FileText, Trash2, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { CategoryBadge, DataStatusChip, DeadlineChip, STATUS_LABEL, StatusDot } from "../shared/Badges";
 import { QueryState } from "../shared/QueryState";
@@ -10,7 +10,7 @@ import {
   useCheckJobResults, useDecideResult, useSetResultSource,
 } from "../../services/api/hooks";
 import type { JobDetail, MatchedPosition, Tracking } from "../../types/api";
-import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp } from "../../utils/format";
+import { CATEGORY_LABEL, TRACKING_LABEL, formatDate, formatTimestamp, DECISION_LABEL } from "../../utils/format";
 
 const ORDER = { UYGUN: 0, "POTANSİYEL OLARAK UYGUN": 1, "UYGUN DEĞİL": 2 } as const;
 const APPLIED_FLOW: Tracking[] = ["applied", "awaiting", "won", "lost"];
@@ -157,6 +157,10 @@ function DrawerBody({ job }: { job: JobDetail }) {
         <button className={`button ${current === "hidden" ? "button-active" : ""}`} onClick={() => setTracking("hidden")}>
           <EyeOff size={16} /> {current === "hidden" ? "Gizlendi" : "İlgilenmiyorum"}
         </button>
+        <button className={`button ${job.muted ? "button-active" : ""}`} disabled={tracking.isPending}
+          onClick={() => tracking.mutate({ jobId: job.id, tracking: current, notes, muted: !job.muted })}>
+          {job.muted ? <BellOff size={16} /> : <Bell size={16} />} {job.muted ? "Bildirimler kapalı" : "Bildirimler açık"}
+        </button>
         {job.has_pdf && <button className="button" onClick={showPdf}><FileText size={16} /> Resmî PDF'i oku</button>}
         {(job.description || job.source_url) && <button className="button" disabled={sourceTextLoading} onClick={showSourceText}><FileText size={16} /> {sourceTextLoading ? "İlan metni alınıyor…" : "İlan metnini oku"}</button>}
         {job.source_url && (
@@ -181,7 +185,7 @@ function DrawerBody({ job }: { job: JobDetail }) {
       <section className="drawer-section">
         <h3>Kendi kararınız</h3>
         <p className="muted">
-          Sistem: {CATEGORY_LABEL[selected.system_category]} · Siz: {job.job_verification ? (job.job_verification.decision === "eligible" ? "Uygun" : "Uygun değil") : "Henüz bakmadım"}
+          Sistem: {CATEGORY_LABEL[selected.system_category]} · Siz: {job.job_verification ? DECISION_LABEL[job.job_verification.decision] : "Henüz bakmadım"}
           {job.job_verification?.verified_at ? ` (${formatTimestamp(job.job_verification.verified_at)})` : ""}
         </p>
         <VerifyButtons jobId={job.id} verification={job.job_verification} note={verifyNote} />
@@ -330,6 +334,11 @@ function ResultSection({ jobId, results, records }: { jobId: number; results: Jo
   );
 }
 
+const METHOD_LABEL: Record<string, string> = {
+  listing: "Kaynağın ilan listesindeki tarih alanı.", label: "İlan metnindeki açık etiket (ör. “Sınav Tarihi: …”). Güven: yüksek.",
+  sentence: "İlan metnindeki cümlenin bağlamından çıkarıldı. Güven: orta; resmî metinle karşılaştır.", user: "Sen ekledin.",
+};
+
 function EventRow({ event }: { event: JobDetail["events"][number] }) {
   const remove = useDeleteEvent();
   const verifyEvent = useVerifyEvent();
@@ -342,7 +351,13 @@ function EventRow({ event }: { event: JobDetail["events"][number] }) {
           {event.previous_date ? ` (önceki: ${formatDate(event.previous_date)})` : ""}
         </span>
         {event.url && <a href={event.url} target="_blank" rel="noreferrer">{event.url.replace(/^https?:\/\//, "")} <ExternalLink size={12} /></a>}
-        {event.evidence && <details><summary>Bu bilgi nereden alındı?</summary><p>{event.evidence}</p></details>}
+        {event.evidence && (
+          <details>
+            <summary>Bu bilgi nereden alındı?{event.confidence === "medium" ? " (cümleden çıkarıldı, doğrula)" : ""}</summary>
+            <p>{event.evidence}</p>
+            <p className="hint">{METHOD_LABEL[event.method ?? ""] ?? "İlan metni"}</p>
+          </details>
+        )}
       </div>
       <div className="button-row">
         {!event.verified && <button className="button button-small" disabled={verifyEvent.isPending} onClick={() => verifyEvent.mutate(event.id)}>Tarihi doğrula</button>}
@@ -368,7 +383,7 @@ function AddEvent({ jobId, prompt, kind }: { jobId: number; prompt: string; kind
       <select aria-label="Olay türü" value={selectedKind} onChange={(event) => setSelectedKind(event.target.value)}>
         <option value="application_start">Başvuru başlangıcı</option><option value="application_deadline">Son başvuru tarihi</option>
         <option value="exam">Sınav</option><option value="interview">Sözlü / mülakat</option><option value="result">Sonuç açıklanacak</option>
-        <option value="documents">Evrak teslimi</option><option value="appointment">Atama</option>
+        <option value="documents">Evrak teslimi</option><option value="appointment">Atama</option><option value="start_work">Göreve başlama</option>
       </select>
       <input type="date" aria-label="Tarih" value={day} onChange={(event) => setDay(event.target.value)} required />
       <input type="time" aria-label="Saat (isteğe bağlı)" value={time} onChange={(event) => setTime(event.target.value)} />

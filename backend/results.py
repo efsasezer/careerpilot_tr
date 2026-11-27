@@ -13,6 +13,7 @@ kontrol edilir; sonuç duyuruları bulunur ve doğru ilanla eşleştirilir.
 
 from __future__ import annotations
 
+from . import clock
 from datetime import date, datetime, timedelta
 import json
 import logging
@@ -520,7 +521,7 @@ def _texts(db: Session, jobs: list[Job]) -> str:
     parts = [job.description or "" for job in jobs]
     ids = [job.id for job in jobs]
     for document in db.scalars(select(JobDocument).where(JobDocument.job_id.in_(ids))).all():
-        if document.extracted_text:
+        if document.extracted_text and document.status != "obsolete":
             parts.append(document.extracted_text)
     return "\n".join(parts)
 
@@ -575,7 +576,7 @@ def check_job(db: Session, entry: dict, reader: SiteReader, peers: list[dict], t
     """Tek ilanın resmî sitesini kontrol eder ve bulunan sonuç duyurularını kaydeder."""
     job: Job = entry["job"]
     family_ids = [member.id for member in entry["family"]]
-    now = datetime.now()
+    now = clock.now()
     tracking = db.get(ResultTracking, job.id)
     if tracking is None:
         tracking = ResultTracking(job_id=job.id)
@@ -653,7 +654,7 @@ def check_results(db: Session, *, today: date | None = None, reader: SiteReader 
     """Sonuç takibindeki ilanları kontrol eder. Başvurulan ilanlar her taramada, diğerleri sırayla."""
     from .sync import organization_key
 
-    today = today or date.today()
+    today = today or clock.today()
     reader = reader or SiteReader()
     entries = tracked_jobs(db, today)
     by_org: dict[str, list[dict]] = {}
@@ -708,7 +709,7 @@ def announcement_payload(row: ResultAnnouncement) -> dict:
 
 def job_result_status(db: Session, job: Job, tracking_state: str, today: date | None = None) -> dict:
     """İlanın sonuç takibi durumu: açık bir kod ve kullanıcıya gösterilecek cümle."""
-    today = today or date.today()
+    today = today or clock.today()
     rows = db.scalars(select(ResultAnnouncement).where(
         ResultAnnouncement.job_id == job.id, ResultAnnouncement.user_decision != "rejected",
     ).order_by(ResultAnnouncement.found_at.desc(), ResultAnnouncement.id.desc())).all()

@@ -18,11 +18,70 @@ from urllib.parse import urljoin
 import requests
 
 
+ERROR_KINDS = {
+    "dns": "Alan adı çözülemedi (DNS)",
+    "connect_timeout": "Sunucu bağlantıyı kabul etmedi (bağlantı zaman aşımı)",
+    "read_timeout": "Sunucu yanıtı zamanında göndermedi (okuma zaman aşımı)",
+    "connection": "Bağlantı kurulamadı ya da kesildi",
+    "tls": "Güvenlik sertifikası doğrulanamadı (TLS)",
+    "http_403": "Sunucu isteği reddetti (HTTP 403)",
+    "http_404": "Sayfa bulunamadı (HTTP 404)",
+    "http_429": "İstek sınırı aşıldı (HTTP 429)",
+    "http_5xx": "Kaynak sunucusunda hata (HTTP 5xx)",
+    "http_other": "Beklenmeyen HTTP yanıtı",
+    "blocked": "Erişim kontrolü sayfası döndü",
+    "browser_timeout": "Sayfa tarayıcıda zamanında yüklenmedi",
+    "structure": "Sayfa yapısı beklenenden farklı",
+    "unknown": "Bilinmeyen hata",
+}
+# Uygulamanın çalıştığı sunucunun konumuna bağlı olabilen hata türleri: kaynak, Türkiye dışındaki
+# sunuculardan gelen istekleri reddediyor ya da yanıtsız bırakıyor olabilir.
+LOCATION_SENSITIVE_KINDS = {"dns", "connect_timeout", "connection", "http_403", "blocked", "browser_timeout"}
+
+
+def classify_error(error: BaseException | None = None, status_code: int | None = None) -> str:
+    """Bir tarama hatasını türüne ayırır (DNS / zaman aşımı / TLS / HTTP durum kodu ...)."""
+    kind = getattr(error, "kind", None)
+    if kind in ERROR_KINDS:
+        return kind
+    status_code = status_code if status_code is not None else getattr(error, "status_code", None)
+    if status_code:
+        if status_code in (401, 403):
+            return "http_403"
+        if status_code == 404:
+            return "http_404"
+        if status_code == 429:
+            return "http_429"
+        return "http_5xx" if status_code >= 500 else "http_other"
+    text = f"{type(error).__name__} {error}".casefold()
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:  # sarmalanmış asıl nedeni de incele
+        seen.add(id(error))
+        text += f" {type(error).__name__} {error}".casefold()
+        error = error.__cause__ or error.__context__
+    if any(marker in text for marker in ("nameresolution", "name or service not known", "nodename nor servname", "getaddrinfo", "err_name_not_resolved", "temporary failure in name resolution")):
+        return "dns"
+    if "ssl" in text or "certificate" in text or "err_cert" in text:
+        return "tls"
+    if "connecttimeout" in text or "connect timeout" in text or "err_connection_timed_out" in text or "err_timed_out" in text:
+        return "connect_timeout"
+    if "readtimeout" in text or "read timed out" in text:
+        return "read_timeout"
+    if "wait_for_function" in text or "wait_for_selector" in text or ("timeout" in text and ("page." in text or "locator" in text or "playwright" in text)):
+        return "browser_timeout"
+    if "connectionerror" in text or "connection refused" in text or "connection reset" in text or "err_connection" in text or "remotedisconnected" in text:
+        return "connection"
+    if "timeout" in text or "timed out" in text:
+        return "read_timeout"
+    return "unknown"
+
+
 class SourceFetchError(RuntimeError):
-    def __init__(self, source_name: str, url: str, message: str, status_code: int | None = None):
+    def __init__(self, source_name: str, url: str, message: str, status_code: int | None = None, kind: str | None = None):
         self.source_name = source_name
         self.url = url
         self.status_code = status_code
+        self.kind = kind or classify_error(None, status_code) if (kind or status_code) else None
         status = f" HTTP {status_code}" if status_code is not None else ""
         super().__init__(f"{source_name}:{status} {url}: {message}")
 
@@ -74,6 +133,7 @@ def parse_html_page(html: str) -> tuple[list[dict[str, str]], str]:
     return parser.links, "\n".join(line for line in lines if line)
 
 
+MIN_DOCUMENT_TEXT = 80
 USER_AGENT = "CareerPilotTR/1.0 (public job listing index)"
 DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -82,20 +142,46 @@ DEFAULT_HEADERS = {
 }
 
 
-def fetch_html(source_name: str, url: str, session: requests.Session | None = None) -> tuple[str, str]:
-    client = session or requests
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 3
+MAX_RETRY_WAIT = 30.0
+
+
+def _retry_wait(response, attempt: int) -> float:
+    """Sunucunun Retry-After isteğine uyar; yoksa üstel bekleme (1, 3 sn). Üst sınır 30 sn."""
+    header = (response.headers.get("Retry-After") or "").strip() if response is not None else ""
+    if header.isdigit():
+        return min(float(header), MAX_RETRY_WAIT)
+    return min(1.0 * 3 ** attempt, MAX_RETRY_WAIT)
+
+
+def fetch_html(source_name: str, url: str, session: requests.Session | None = None, *, sleep=time.sleep) -> tuple[str, str]:
+    """Bir kaynak sayfasını alır.
+
+    - Bağlantı/zaman aşımı hataları ile 429 ve 5xx yanıtları sınırlı sayıda yeniden denenir.
+    - 403 ve 404 yeniden denenmez: aynı isteği yinelemek sonucu değiştirmez ve kaynağı yorar.
+    - Sertifika zinciri eksikse doğrulama kapatılmaz; `tls.get` zinciri doğrulanmış biçimde tamamlar.
+    - Başarısız ya da engellenmiş yanıt asla boş ilan listesi gibi döndürülmez; hata türüyle birlikte yükseltilir.
+    """
+    from .. import tls
+
     response = None
     last_error: Exception | None = None
-    for attempt in range(3):
+    for attempt in range(MAX_ATTEMPTS):
         try:
-            response = client.get(url, timeout=(15, 40), headers=DEFAULT_HEADERS)
-            break
+            response = tls.get(url, session=session, timeout=(15, 40), headers=DEFAULT_HEADERS)
         except requests.RequestException as error:
-            last_error = error
-            if attempt < 2:
-                time.sleep(1.0 * (attempt + 1))
+            last_error, response = error, None
+            if classify_error(error) == "tls" or attempt == MAX_ATTEMPTS - 1:
+                break  # sertifika hatası beklemekle düzelmez
+            sleep(_retry_wait(None, attempt))
+            continue
+        if response.status_code in RETRY_STATUSES and attempt < MAX_ATTEMPTS - 1:
+            sleep(_retry_wait(response, attempt))
+            continue
+        break
     if response is None:
-        raise SourceFetchError(source_name, url, str(last_error)) from last_error
+        raise SourceFetchError(source_name, url, str(last_error), kind=classify_error(last_error)) from last_error
     if response.status_code != 200:
         raise SourceFetchError(source_name, url, "Kaynak sayfası alınamadı.", response.status_code)
     response.encoding = response.apparent_encoding or response.encoding
@@ -105,8 +191,26 @@ def fetch_html(source_name: str, url: str, session: requests.Session | None = No
         for marker in ("request rejected", "access denied", "captcha", "robot check")
     )
     if rejected:
-        raise SourceFetchError(source_name, url, "Kaynak erişim kontrolü isteği reddetti.", response.status_code)
+        raise SourceFetchError(source_name, url, "Kaynak erişim kontrolü isteği reddetti.", response.status_code, kind="blocked")
     return response.url, body
+
+
+def pdf_is_scanned(body: bytes) -> bool:
+    """Sayfaları görüntüden oluşan ve neredeyse hiç metin içermeyen PDF: taranmış belge."""
+    if not body.startswith(b"%PDF-"):
+        return False
+    try:
+        import io
+
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(body)) as pdf:
+            pages = pdf.pages[:5]
+            image_pages = sum(1 for page in pages if page.images)
+            characters = sum(len(page.chars) for page in pages)
+        return bool(pages) and image_pages >= max(1, len(pages) // 2) and characters < MIN_DOCUMENT_TEXT * len(pages)
+    except Exception:
+        return False
 
 
 def absolute_url(page_url: str, href: str) -> str:
@@ -174,6 +278,10 @@ class BaseJobSource(ABC):
 
         try:
             parsed = parse_document(url, body, content_type)
+            # Taranmış PDF'lerde yalnızca kaşe/sayfa numarası gibi birkaç karakterlik metin katmanı
+            # olabilir. Bunu "okundu" saymak ilanı boş gösterir; taranmış belge olarak ele alınır.
+            if len((parsed.get("text") or "").strip()) < MIN_DOCUMENT_TEXT and pdf_is_scanned(body):
+                raise DocumentParseError("PDF'te okunabilir metin katmanı yok (taranmış belge).")
         except DocumentParseError as error:
             if not body.startswith(b"%PDF-"):
                 raise
